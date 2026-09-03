@@ -4,30 +4,31 @@
  * Headhunter admin client. No build step, no framework: edit this file on the
  * host and reload the page.
  *
- * Credentials are a PostgreSQL username and password. They are sent as HTTP
- * Basic on every request, because the API has no sessions — the database role
- * on the connection IS the identity.
+ * Sign in once, keep a bearer token. The token is revocable and expires, and it
+ * is not a database credential — the database is only ever reached by the API.
  */
 
 /** Where the API lives. Change this one line if the domain ever moves. */
 const API_BASE = 'https://hunty.ir';
 
 const store = {
-  get user() { return localStorage.getItem('hh.user') || ''; },
-  get pass() { return localStorage.getItem('hh.pass') || ''; },
-  save(user, pass) {
-    localStorage.setItem('hh.user', user);
-    localStorage.setItem('hh.pass', pass);
+  get token() { return localStorage.getItem('hh.token') || ''; },
+  get role()  { return localStorage.getItem('hh.role')  || ''; },
+  get name()  { return localStorage.getItem('hh.name')  || ''; },
+  save(token, user) {
+    localStorage.setItem('hh.token', token);
+    localStorage.setItem('hh.role', user.role);
+    localStorage.setItem('hh.name', user.username);
   },
-  clear() { ['hh.user', 'hh.pass'].forEach((k) => localStorage.removeItem(k)); }
+  clear() { ['hh.token', 'hh.role', 'hh.name'].forEach((k) => localStorage.removeItem(k)); }
 };
 
 function authHeader() {
-  return 'Basic ' + btoa(unescape(encodeURIComponent(store.user + ':' + store.pass)));
+  return 'Bearer ' + store.token;
 }
 
-async function api(method, path, body) {
-  const options = { method, headers: { Authorization: authHeader() } };
+async function api(method, path, body, anonymous) {
+  const options = { method, headers: anonymous ? {} : { Authorization: authHeader() } };
 
   if (body instanceof FormData) {
     options.body = body;
@@ -143,22 +144,29 @@ function viewLogin() {
     onsubmit: async (event) => {
       event.preventDefault();
       const data = new FormData(form);
-      store.save(String(data.get('user')).trim(), String(data.get('pass')));
+      const button = form.querySelector('button');
+      button.disabled = true;
       try {
-        const me = await api('GET', '/me');
-        toast('Signed in as ' + me.role);
+        const result = await api('POST', '/auth/login', {
+          username: String(data.get('user')).trim(),
+          password: String(data.get('pass'))
+        }, true);
+        store.save(result.token, result.user);
+        toast('Signed in as ' + result.user.username);
         location.hash = '#/inbox';
         route();
       } catch (err) {
         store.clear();
         toast(err.message, true);
+      } finally {
+        button.disabled = false;
       }
     }
   }, [
     el('h2', { text: 'Sign in' }),
-    el('p', { class: 'muted', text: 'Your PostgreSQL role and password. The database itself decides what you can see.' }),
+    el('p', { class: 'muted', text: 'Sign in with your headhunter account.' }),
     el('p', { class: 'muted mono', text: API_BASE }),
-    field('Database user', 'user', store.user),
+    field('Username', 'user', store.name),
     field('Password', 'pass', '', 'password'),
     el('button', { class: 'primary', type: 'submit', text: 'Sign in' })
   ]);
@@ -637,7 +645,7 @@ async function viewAccount() {
   chrome('Account', false);
 
   let me = {};
-  try { me = await api('GET', '/me'); } catch (err) { return showError(err); }
+  try { me = await api('GET', '/auth/me'); } catch (err) { return showError(err); }
 
   const password = el('form', {
     class: 'card stack',
@@ -647,54 +655,210 @@ async function viewAccount() {
       const next = String(f.get('new_password'));
       if (next !== String(f.get('confirm'))) return toast('The two passwords do not match.', true);
       try {
-        await api('POST', '/auth/password', { new_password: next });
-        store.save(store.user, next);
+        await api('POST', '/auth/password', {
+          current_password: f.get('current_password'),
+          new_password: next
+        });
         event.target.reset();
-        toast('Database password changed');
+        toast('Password changed. Your other sessions were signed out.');
       } catch (err) { toast(err.message, true); }
     }
   }, [
-    el('h2', { text: 'Change my database password' }),
-    el('p', { class: 'muted', text: 'This runs ALTER ROLE on your own PostgreSQL role. Any other client using these credentials will stop working.' }),
-    field('New password', 'new_password', '', 'password'),
-    field('Confirm', 'confirm', '', 'password'),
+    el('h2', { text: 'Change my password' }),
+    el('p', { class: 'muted', text: 'Every other session of yours is signed out, but this one stays.' }),
+    field('Current password', 'current_password', '', 'password'),
+    el('div', { class: 'grid2' }, [
+      field('New password', 'new_password', '', 'password'),
+      field('Confirm', 'confirm', '', 'password')
+    ]),
     el('button', { class: 'primary', type: 'submit', text: 'Change password' })
   ]);
-
-  const colleague = me.can_create_admins ? el('form', {
-    class: 'card stack',
-    onsubmit: async (event) => {
-      event.preventDefault();
-      const f = new FormData(event.target);
-      try {
-        await api('POST', '/admins', { username: f.get('username'), password: f.get('password') });
-        event.target.reset();
-        toast('Role created');
-      } catch (err) { toast(err.message, true); }
-    }
-  }, [
-    el('h2', { text: 'Add a colleague' }),
-    el('p', { class: 'muted', text: 'Creates a PostgreSQL login role in the hh_admin group. They will see the same shared candidate pool.' }),
-    el('div', { class: 'grid2' }, [
-      field('Username', 'username', ''),
-      field('Password', 'password', '', 'password')
-    ]),
-    el('button', { class: 'primary', type: 'submit', text: 'Create role' })
-  ]) : null;
 
   show(
     el('div', { class: 'card' }, [
       el('h2', { text: 'Signed in' }),
-      el('div', { class: 'mono', text: me.role }),
+      el('div', {}, [
+        el('strong', { text: me.user.display_name || me.user.username }),
+        ' ',
+        el('span', { class: 'pill', text: me.user.role })
+      ]),
+      el('div', { class: 'muted mono', text: me.user.username }),
       el('div', { class: 'muted mono', text: API_BASE }),
-      el('div', { class: 'muted', text: me.can_create_admins ? 'Can create colleagues (CREATEROLE)' : 'Cannot create other roles' }),
+      me.session && me.session.expires_at
+        ? el('div', { class: 'muted', text: 'Session expires ' + when(me.session.expires_at) })
+        : null,
       el('div', { class: 'row', style: 'margin-top:10px' }, [
-        el('button', { class: 'danger', onclick: () => { store.clear(); location.hash = '#/'; route(); }, text: 'Sign out' })
+        el('button', {
+          class: 'danger',
+          onclick: async () => {
+            try { await api('POST', '/auth/logout'); } catch (err) { /* sign out locally regardless */ }
+            store.clear();
+            location.hash = '#/';
+            route();
+          },
+          text: 'Sign out'
+        })
       ])
     ]),
-    password,
-    colleague
+    password
   );
+}
+
+// ---------------------------------------------------------------------------
+// Users (owner only)
+// ---------------------------------------------------------------------------
+
+async function viewUsers() {
+  chrome('Users', false);
+  busy();
+
+  let data, sessions;
+  try {
+    data = await api('GET', '/users');
+    sessions = await api('GET', '/sessions');
+  } catch (err) {
+    return showError(err);
+  }
+
+  const patch = async (id, payload, message) => {
+    try {
+      await api('PATCH', '/users/' + id, payload);
+      toast(message || 'Saved');
+      viewUsers();
+    } catch (err) { toast(err.message, true); }
+  };
+
+  const rows = data.users.map((u) => el('div', { class: 'entry' }, [
+    el('div', { class: 'row between' }, [
+      el('div', { class: 'grow' }, [
+        el('strong', { text: u.display_name || u.username }),
+        ' ',
+        el('span', { class: 'pill', text: u.role }),
+        u.status !== 'active' ? el('span', { class: 'pill failed', text: u.status }) : null,
+        u.locked_until && new Date(u.locked_until) > new Date()
+          ? el('span', { class: 'pill failed', text: 'locked' })
+          : null
+      ])
+    ]),
+    el('div', { class: 'muted mono', text: u.username }),
+    el('div', { class: 'muted', text:
+      (u.last_login_at ? 'last sign in ' + when(u.last_login_at) : 'never signed in') +
+      ' · ' + u.active_sessions + ' active session(s)' }),
+    el('div', { class: 'row', style: 'margin-top:8px' }, [
+      u.role === 'gateway' ? el('button', {
+        class: 'small primary',
+        onclick: async () => {
+          if (!confirm('Issue a new gateway token? The old ones keep working until you revoke them.')) return;
+          try {
+            const result = await api('POST', '/users/' + u.id + '/tokens', { label: 'issued from admin app' });
+            showToken(result.token);
+          } catch (err) { toast(err.message, true); }
+        },
+        text: 'Issue token'
+      }) : el('button', {
+        class: 'small',
+        onclick: () => {
+          const next = prompt('New password for ' + u.username + ' (at least 10 characters):');
+          if (!next) return;
+          patch(u.id, { password: next }, 'Password reset; their sessions were signed out.');
+        },
+        text: 'Reset password'
+      }),
+      u.status === 'active'
+        ? el('button', { class: 'small danger', onclick: () => patch(u.id, { status: 'disabled' }, 'Disabled'), text: 'Disable' })
+        : el('button', { class: 'small', onclick: () => patch(u.id, { status: 'active' }, 'Enabled'), text: 'Enable' }),
+      u.locked_until && new Date(u.locked_until) > new Date()
+        ? el('button', { class: 'small', onclick: () => patch(u.id, { unlock: true }, 'Unlocked'), text: 'Unlock' })
+        : null,
+      el('button', {
+        class: 'small danger',
+        onclick: async () => {
+          if (!confirm('Delete ' + u.username + '? This cannot be undone.')) return;
+          try {
+            await api('DELETE', '/users/' + u.id);
+            toast('Deleted');
+            viewUsers();
+          } catch (err) { toast(err.message, true); }
+        },
+        text: 'Delete'
+      })
+    ])
+  ]));
+
+  const create = el('form', {
+    class: 'card stack',
+    onsubmit: async (event) => {
+      event.preventDefault();
+      const f = new FormData(event.target);
+      const payload = {
+        username: f.get('username'),
+        display_name: f.get('display_name'),
+        role: f.get('role')
+      };
+      if (payload.role !== 'gateway') payload.password = f.get('password');
+      try {
+        await api('POST', '/users', payload);
+        event.target.reset();
+        toast('Account created');
+        viewUsers();
+      } catch (err) { toast(err.message, true); }
+    }
+  }, [
+    el('h2', { text: 'Add an account' }),
+    el('div', { class: 'grid2' }, [
+      field('Username', 'username', ''),
+      field('Display name', 'display_name', '')
+    ]),
+    el('div', { class: 'grid2' }, [
+      el('div', {}, [
+        el('label', { text: 'Role' }),
+        el('select', { name: 'role' }, [
+          el('option', { value: 'admin', text: 'admin — a headhunter' }),
+          el('option', { value: 'owner', text: 'owner — can manage accounts' }),
+          el('option', { value: 'gateway', text: 'gateway — machine account, token only' })
+        ])
+      ]),
+      field('Password (not for gateway)', 'password', '', 'password')
+    ]),
+    el('button', { class: 'primary', type: 'submit', text: 'Create' })
+  ]);
+
+  const active = el('div', { class: 'card' }, [
+    el('h2', { text: 'Active sessions' }),
+    ...(sessions.sessions.length ? sessions.sessions.map((s) => el('div', { class: 'entry' }, [
+      el('div', { class: 'row between' }, [
+        el('span', {}, [el('strong', { text: s.username }), ' ', el('span', { class: 'muted', text: s.label })]),
+        el('button', {
+          class: 'small danger',
+          onclick: async () => {
+            try {
+              await api('DELETE', '/sessions/' + s.id);
+              toast('Revoked');
+              viewUsers();
+            } catch (err) { toast(err.message, true); }
+          },
+          text: 'Revoke'
+        })
+      ]),
+      el('div', { class: 'muted', text:
+        'created ' + when(s.created_at) +
+        (s.last_seen_at ? ' · last used ' + when(s.last_seen_at) : '') +
+        ' · ' + (s.expires_at ? 'expires ' + when(s.expires_at) : 'never expires') })
+    ])) : [el('p', { class: 'muted', text: 'None.' })])
+  ]);
+
+  show(el('div', { class: 'card' }, [el('h2', { text: 'Accounts' }), ...rows]), create, active);
+}
+
+/** A token is shown exactly once, so make it hard to lose. */
+function showToken(token) {
+  show(el('div', { class: 'card stack' }, [
+    el('h2', { text: 'Gateway token' }),
+    el('p', { text: 'Copy this now. Only its hash is stored, so it cannot be shown again.' }),
+    el('textarea', { readonly: true, text: token, style: 'min-height:70px', onclick: (e) => e.target.select() }),
+    el('p', { class: 'muted', text: 'Put it in the Apps Script property API_TOKEN.' }),
+    el('button', { class: 'primary', onclick: () => viewUsers(), text: 'Done' })
+  ]));
 }
 
 // ---------------------------------------------------------------------------
@@ -708,6 +872,10 @@ function chrome(title, showBack) {
   const back = document.getElementById('back');
   back.hidden = !showBack;
   back.onclick = () => history.back();
+
+  for (const link of bar.querySelectorAll('nav a[data-owner-only]')) {
+    link.hidden = store.role !== 'owner';
+  }
   for (const link of bar.querySelectorAll('nav a')) {
     link.classList.toggle('active', location.hash.startsWith(link.getAttribute('href')));
   }
@@ -729,7 +897,7 @@ function showError(err) {
 function route() {
   clearTimeout(viewRun.timer);
 
-  if (!store.user) return viewLogin();
+  if (!store.token) return viewLogin();
 
   const hash = location.hash || '#/inbox';
   const run = hash.match(/^#\/run\/(\d+)/);
@@ -739,6 +907,7 @@ function route() {
   if (candidate) return viewCandidate(candidate[1]);
   if (hash.startsWith('#/settings')) return viewSettings();
   if (hash.startsWith('#/account')) return viewAccount();
+  if (hash.startsWith('#/users')) return viewUsers();
   return viewInbox();
 }
 

@@ -15,22 +15,36 @@ Three deliberately separate pieces:
 Only the PHP runtime is baked into an image, and only because the official PHP
 image has no `pdo_pgsql`. All application code is mounted from the host.
 
-## The one idea worth knowing
+## Shape of the thing
 
-**PostgreSQL roles are the users.** There is no users table, no session table, no
-JWT, no password hashing in PHP. A request carries HTTP Basic credentials, the API
-opens a database connection *as that role*, and `GRANT` plus row level security
-decide everything after that.
-
-So `bot_gateway` cannot read your AI API key because the database refuses, not
-because an `if` statement in PHP said so:
+**The database has exactly one client.** It runs on an internal Docker network
+with no published port and no route off the host, so the only things that can
+open a socket to it are the `api` and `worker` containers. Because that network
+boundary is the whole perimeter, the single application role has no password.
 
 ```
-$ curl -u bot_gateway:… https://hunty.ir/settings
-{"error":"Your database role is not permitted to do that.","sqlstate":"42501"}
+networks:
+  data   internal, no egress    db, api, worker
+  edge   normal bridge          api, worker, gotenberg, pwa
 ```
 
-Changing your password is `ALTER ROLE`. Adding a colleague is `CREATE ROLE`.
+**Users are application data**, not database roles: a `users` table with bcrypt
+password hashes, a `sessions` table holding only the SHA-256 of each bearer
+token, login throttling with exponential lockout, and revocation.
+
+**Authorization is one table.** Every route in `api/public/index.php` names the
+capability it needs, and `api/src/auth.php` maps capabilities to roles. Nothing
+else in the codebase decides who may do what:
+
+| Capability | Roles | Covers |
+|---|---|---|
+| `public` | no token | `/`, `/health`, `/auth/login` |
+| `user` | gateway, admin, owner | own account, plus the gateway's two endpoints |
+| `admin` | admin, owner | candidates, resumes, runs, deliveries, settings |
+| `owner` | owner | accounts, sessions, tokens |
+
+The gateway account can reach 9 of 35 routes. It cannot read the AI API key, list
+candidates, or see a run.
 
 ## Flow
 
@@ -56,21 +70,17 @@ governed by one editable instruction on the Settings screen.
 
 ```sh
 docker compose up -d --build
-docker compose logs db | grep -A6 'Initial database credentials'
+docker compose logs db | grep -A6 'Initial credentials'
 ```
 
-First boot generates passwords for `hh_owner` and `bot_gateway` and prints them to
-the database log, which is the reliable place to read them from. It also tries to
-write them to `data/secrets/initial-credentials.txt`, which only works if that
-directory is writable by the container. Sign in to the PWA as `hh_owner` and change
-the password from the Account screen.
-
-They are shown **once**, on the very first boot. To start over, stop the stack and
-delete `data/postgres`.
+First boot generates the `owner` password and a gateway token, prints them to the
+database log, and tries to write them to `data/secrets/initial-credentials.txt`.
+They are shown **once**. Sign in to the PWA as `owner` and change the password
+from the Account screen. To start over, stop the stack and delete `data/postgres`.
 
 The API listens on `0.0.0.0:9345` over plain HTTP. Reverse-proxy `https://hunty.ir`
-onto it — **Basic auth over plain HTTP would leak database passwords**, so TLS at
-the proxy is not optional. The PWA is on `0.0.0.0:9346`.
+onto it — a bearer token in cleartext is still a credential, so TLS at the proxy
+is not optional. The PWA is on `0.0.0.0:9346`.
 
 Optional, makes PDF rendering fully offline:
 
@@ -83,21 +93,24 @@ needs the Gotenberg container to have internet access.
 
 ## Configuration
 
-There is no `.env` file. Two kinds of setting, two places:
+There is no `.env` file. Three kinds of setting, three places:
 
 - **Fixed, non-secret** — `api/src/config.php` (and `API_BASE` at the top of
   `pwa/app.js` and `gas/Code.gs`). The domain is hardcoded to `https://hunty.ir`;
   change those three constants if it ever moves.
-- **Secret or operational** — the `settings` table, edited on the Settings screen:
+- **Operational secrets** — the `settings` table, edited on the Settings screen:
   the AI instruction, AI base URL / model / key, and the gateway URL / secret.
+- **Credentials** — the `users` and `sessions` tables. Nothing is ever stored in
+  plaintext, and nothing is in the repository.
 
 ## Wiring up the Telegram bot
 
 1. Create a bot with `@BotFather`, keep the token.
 2. Paste `gas/Code.gs` into a new Apps Script project.
 3. Deploy as a **Web app**, execute as yourself, access **Anyone**.
-4. Script Properties: `BOT_TOKEN`, `API_PASS` (the `bot_gateway` password),
-   `GATEWAY_SECRET` (any long random string).
+4. Script Properties: `BOT_TOKEN`, `API_TOKEN` (the gateway token from first boot,
+   or reissued from the admin app's Users screen), and `GATEWAY_SECRET` (any long
+   random string).
 5. Run `setWebhook()` once from the editor. It logs the gateway URL to use.
 6. In the PWA's Settings, set **Gateway URL** to that logged URL — the web app URL
    with `?secret=<GATEWAY_SECRET>` appended. Apps Script cannot read request
@@ -106,21 +119,25 @@ There is no `.env` file. Two kinds of setting, two places:
 ## Layout
 
 ```
-api/                PHP: public/index.php is the whole router
+api/                PHP: public/index.php is the router and the capability table
   src/              config, db, auth, files, ai, pdf, gateway, http client
   routes/           one file per resource
 worker/worker.php   both queues: AI extraction, and delivery pushes
 templates/          the resume PDF template (Persian RTL and English LTR)
 pwa/                the admin app
 gas/Code.gs         the Telegram gateway
-db/                 schema, roles, RLS, pg_hba
+db/                 schema, bootstrap, pg_hba
 data/               all runtime state (gitignored)
 ```
 
 ## Security notes
 
-- `hh_worker` has **no password**. `db/pg_hba.conf` trusts it, and the database
-  port is not published, so only this compose network can reach it. Every other
-  role needs a real password — if they did not, HTTP Basic would verify nothing.
+- The database's protection is the network, not a password. If you ever publish
+  its port or attach it to a routable network, that protection is gone.
+- Deliveries carry an `idempotency_key`, and the gateway caches keys it has
+  already sent, so a push that times out after Telegram accepted the document
+  does not deliver it twice.
+- Changing a password revokes every other session for that user. Disabling an
+  account or resetting its password revokes all of them.
 - Resumes are personal data. `data/` holds all of it; keep it off public paths.
 - Nothing auto-deletes. Retention is your call.

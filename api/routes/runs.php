@@ -114,13 +114,14 @@ function r_run_deliver(array $p): array
 
     $pdo = db();
     $stmt = $pdo->prepare(
-        "INSERT INTO deliveries (candidate_id, run_id, kind, body, file_path, file_name)
-         VALUES (:candidate, :run, 'document', :body, :path, :name)
+        "INSERT INTO deliveries (candidate_id, run_id, sent_by, kind, body, file_path, file_name)
+         VALUES (:candidate, :run, :user, 'document', :body, :path, :name)
          RETURNING id, kind, body, file_name, status, created_at"
     );
     $stmt->execute([
         ':candidate' => $run['candidate_id'],
         ':run'       => $run['id'],
+        ':user'      => current_user_id(),
         ':body'      => $message,
         ':path'      => $run['output_path'],
         ':name'      => $fileName,

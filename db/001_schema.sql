@@ -1,5 +1,53 @@
--- Headhunter schema. Five tables, all in the default `public` schema.
--- `runs` and `deliveries` double as work queues (FOR UPDATE SKIP LOCKED).
+-- Headhunter schema.
+--
+-- The database has exactly one client: the API. There is one login role, it has
+-- no password, and it is reachable only from an internal Docker network. So there
+-- is no row level security and no per-user database role here: users, sessions
+-- and permissions are ordinary application data.
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- ---------------------------------------------------------------------------
+-- Identity
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE users (
+    id              bigserial PRIMARY KEY,
+    username        text        NOT NULL UNIQUE
+                    CHECK (username = lower(username) AND length(username) BETWEEN 2 AND 64),
+    display_name    text        NOT NULL DEFAULT '',
+    -- bcrypt. NULL for machine accounts, which authenticate by token only.
+    password_hash   text,
+    role            text        NOT NULL CHECK (role IN ('owner', 'admin', 'gateway')),
+    status          text        NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'disabled')),
+    -- Login throttling. Cleared on every successful sign in.
+    failed_attempts int         NOT NULL DEFAULT 0,
+    locked_until    timestamptz,
+    last_login_at   timestamptz,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);
+
+-- Bearer tokens. Only the SHA-256 of a token is ever stored, so a database dump
+-- does not hand anyone a working credential.
+CREATE TABLE sessions (
+    id           bigserial PRIMARY KEY,
+    user_id      bigint      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash   text        NOT NULL UNIQUE,
+    -- Set for long-lived machine tokens so they can be told apart in the UI.
+    label        text        NOT NULL DEFAULT '',
+    -- NULL means the token never expires; used for the gateway.
+    expires_at   timestamptz,
+    revoked_at   timestamptz,
+    last_seen_at timestamptz,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX sessions_user_idx ON sessions (user_id, created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Candidates and their resumes
+-- ---------------------------------------------------------------------------
 
 CREATE TABLE candidates (
     id            bigserial PRIMARY KEY,
@@ -28,16 +76,19 @@ CREATE TABLE resumes (
 );
 CREATE INDEX resumes_candidate_idx ON resumes (candidate_id, created_at DESC);
 
+-- Doubles as the polish queue (FOR UPDATE SKIP LOCKED).
 CREATE TABLE runs (
     id                    bigserial PRIMARY KEY,
     resume_id             bigint      NOT NULL REFERENCES resumes(id) ON DELETE CASCADE,
+    -- Who asked for this run. Kept when the user is later deleted.
+    requested_by          bigint      REFERENCES users(id) ON DELETE SET NULL,
     status                text        NOT NULL DEFAULT 'queued'
                           CHECK (status IN ('queued', 'running', 'needs_review',
                                             'rendering', 'ready', 'delivered', 'failed')),
     -- What the global instruction said at the moment this run started.
     instruction_snapshot  text        NOT NULL DEFAULT '',
     model                 text        NOT NULL DEFAULT '',
-    -- How the resume text reached the model: 'file' (PDF upload) or 'text' (pdftotext).
+    -- How the resume reached the model: 'file' (PDF upload) or 'text' (pdftotext).
     input_mode            text,
     extracted             jsonb,
     edited                jsonb,
@@ -56,6 +107,7 @@ CREATE TABLE deliveries (
     id               bigserial PRIMARY KEY,
     candidate_id     bigint      NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
     run_id           bigint      REFERENCES runs(id) ON DELETE SET NULL,
+    sent_by          bigint      REFERENCES users(id) ON DELETE SET NULL,
     kind             text        NOT NULL CHECK (kind IN ('text', 'document')),
     body             text        NOT NULL DEFAULT '',
     file_path        text,
@@ -65,6 +117,8 @@ CREATE TABLE deliveries (
     attempts         int         NOT NULL DEFAULT 0,
     next_attempt_at  timestamptz NOT NULL DEFAULT now(),
     last_error       text,
+    -- Sent to the gateway so a retried push can be recognised as a duplicate.
+    idempotency_key  uuid        NOT NULL DEFAULT gen_random_uuid(),
     created_at       timestamptz NOT NULL DEFAULT now(),
     sent_at          timestamptz
 );

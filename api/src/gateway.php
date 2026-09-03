@@ -37,5 +37,8 @@ function delivery_payload(array $delivery): array
         'file_url'     => $delivery['file_path'] === null ? null : $base . '/deliveries/' . $delivery['id'] . '/file',
         'file_name'    => $delivery['file_name'],
         'delivery_id'  => (int) $delivery['id'],
+        // Stable across retries of the same delivery, so the gateway can refuse
+        // to send the same document twice when a push times out after it worked.
+        'idempotency_key' => $delivery['idempotency_key'],
     ];
 }

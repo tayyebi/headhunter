@@ -26,13 +26,6 @@ function say(string $message): void
     fwrite(STDERR, '[worker ' . gmdate('H:i:s') . '] ' . $message . "\n");
 }
 
-function worker_connect(): PDO
-{
-    // No password: pg_hba.conf trusts this role, and only the compose network
-    // can reach the database at all.
-    return connect_as(WORKER_DB_USER, '');
-}
-
 function worker_settings(PDO $pdo): array
 {
     $row = $pdo->query('SELECT * FROM settings WHERE id = 1')->fetch();
@@ -149,7 +142,8 @@ function claim_delivery(PDO $pdo): ?array
                 SET attempts = attempts + 1,
                     next_attempt_at = now() + (interval '30 seconds' * power(2, attempts))
               WHERE id = :id
-              RETURNING id, candidate_id, kind, body, file_path, file_name, attempts"
+              RETURNING id, candidate_id, kind, body, file_path, file_name, attempts,
+                        idempotency_key"
         );
         $stmt->execute([':id' => $claim['id']]);
         $delivery = $stmt->fetch();
@@ -202,7 +196,7 @@ say('starting, polling every ' . $poll . 's');
 while (true) {
     try {
         if (!$pdo instanceof PDO) {
-            $pdo = worker_connect();
+            $pdo = db();
             say('connected as ' . $pdo->query('SELECT current_user')->fetchColumn());
         }
 
@@ -233,6 +227,7 @@ while (true) {
         }
     } catch (PDOException $e) {
         say('database error, reconnecting in 5s: ' . $e->getMessage());
+        db_disconnect();
         $pdo = null;
         sleep(5);
     } catch (Throwable $e) {

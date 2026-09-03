@@ -64,9 +64,10 @@ function r_run_create(array $p): array
     $resume = resume_or_404((int) $p[0]);
 
     $stmt = db()->prepare(
-        "INSERT INTO runs (resume_id, status) VALUES (:resume, 'queued') RETURNING *"
+        "INSERT INTO runs (resume_id, requested_by, status)
+         VALUES (:resume, :user, 'queued') RETURNING *"
     );
-    $stmt->execute([':resume' => $resume['id']]);
+    $stmt->execute([':resume' => $resume['id'], ':user' => current_user_id()]);
 
     return ['run' => $stmt->fetch()];
 }

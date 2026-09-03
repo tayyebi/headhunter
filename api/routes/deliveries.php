@@ -29,10 +29,11 @@ function r_delivery_create(array $p): array
     candidate_or_404($candidateId);
 
     $stmt = db()->prepare(
-        "INSERT INTO deliveries (candidate_id, kind, body) VALUES (:candidate, 'text', :body)
+        "INSERT INTO deliveries (candidate_id, sent_by, kind, body)
+         VALUES (:candidate, :user, 'text', :body)
          RETURNING id, kind, body, status, created_at"
     );
-    $stmt->execute([':candidate' => $candidateId, ':body' => $message]);
+    $stmt->execute([':candidate' => $candidateId, ':user' => current_user_id(), ':body' => $message]);
 
     return ['delivery' => $stmt->fetch()];
 }

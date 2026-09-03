@@ -2,8 +2,8 @@
  * Telegram gateway for the headhunter API.
  *
  * This is the ONLY component that knows Telegram exists. To the REST API it is
- * just a client authenticating as the PostgreSQL role `bot_gateway`, and the
- * API addresses candidates by an opaque `external_ref` that we define here as
+ * just a client holding a bearer token for a machine account, and the API
+ * addresses candidates by an opaque `external_ref` that we define here as
  * "telegram:<chat id>".
  *
  * doPost handles two kinds of request:
@@ -14,7 +14,8 @@
  *   1. Deploy > New deployment > Web app, execute as me, access "Anyone".
  *   2. Project Settings > Script Properties, add:
  *        BOT_TOKEN        the Telegram bot token
- *        API_PASS         the bot_gateway database password (see secrets/initial-credentials.txt)
+ *        API_TOKEN        the gateway token (printed on first boot, or reissued
+ *                         from the admin app's Users screen)
  *        GATEWAY_SECRET   any long random string
  *   3. Put the same web app URL and GATEWAY_SECRET into the admin app's Settings screen.
  *   4. Run setWebhook() once from the editor.
@@ -23,9 +24,6 @@
 /** Where the API lives. Change this one line if the domain ever moves. */
 var API_BASE = 'https://hunty.ir';
 
-/** The PostgreSQL role this gateway authenticates as. */
-var API_USER = 'bot_gateway';
-
 function prop(name) {
   var value = PropertiesService.getScriptProperties().getProperty(name);
   if (!value) throw new Error('Missing script property: ' + name);
@@ -33,9 +31,7 @@ function prop(name) {
 }
 
 function apiHeaders() {
-  return {
-    Authorization: 'Basic ' + Utilities.base64Encode(API_USER + ':' + prop('API_PASS'))
-  };
+  return { Authorization: 'Bearer ' + prop('API_TOKEN') };
 }
 
 function telegram(method, payload) {
@@ -171,6 +167,16 @@ function handleDelivery(payload, secretFromQuery) {
     throw new Error('Rejected delivery: bad or missing gateway secret.');
   }
 
+  // The worker gives up on a slow push and retries it. Without this check a
+  // candidate would receive the same document twice whenever sending succeeded
+  // but the response did not get back in time.
+  var cache = CacheService.getScriptCache();
+  var seenKey = payload.idempotency_key ? 'sent:' + payload.idempotency_key : null;
+  if (seenKey && cache.get(seenKey)) {
+    console.log('skipping duplicate delivery ' + payload.delivery_id);
+    return;
+  }
+
   var chatId = String(payload.external_ref).replace(/^telegram:/, '');
 
   if (payload.kind === 'document' && payload.file_url) {
@@ -196,10 +202,12 @@ function handleDelivery(payload, secretFromQuery) {
     if (sent.getResponseCode() >= 300) {
       throw new Error('sendDocument failed: ' + sent.getContentText());
     }
+    if (seenKey) cache.put(seenKey, '1', 21600);
     return;
   }
 
   telegram('sendMessage', { chat_id: chatId, text: payload.text || '' });
+  if (seenKey) cache.put(seenKey, '1', 21600);
 }
 
 // --------------------------------------------------------------------------
@@ -218,7 +226,7 @@ function deleteWebhook() {
 }
 
 function testApiAuth() {
-  var response = UrlFetchApp.fetch(API_BASE + '/me', {
+  var response = UrlFetchApp.fetch(API_BASE + '/auth/me', {
     headers: apiHeaders(),
     muteHttpExceptions: true
   });

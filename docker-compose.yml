@@ -3,25 +3,32 @@
 # Every piece of mutable state lives under ./data on the host, so a backup is
 # "stop the stack, copy ./data". Nothing is stored inside a container.
 #
-# The database publishes no port. It is reachable only from this compose network,
-# which is what lets the worker connect without a password (see db/pg_hba.conf).
+# Network shape is the security boundary for the database:
+#
+#   data  internal, no route off the host   db, api, worker
+#   edge  normal bridge, has egress         api, worker, gotenberg, pwa
+#
+# The db container is on `data` only. Nothing but the API and the worker can
+# open a socket to it, and it cannot reach the internet at all. That is what
+# lets the application role have no password.
 
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    networks: [data]
     environment:
       POSTGRES_DB: headhunter
       POSTGRES_USER: postgres
-      # Applies to the local socket during bootstrap only; the running server
-      # uses the mounted pg_hba.conf below.
+      # Applies to the local socket during bootstrap; the running server uses
+      # the mounted pg_hba.conf below.
       POSTGRES_HOST_AUTH_METHOD: trust
     command: ["postgres", "-c", "hba_file=/etc/postgresql/pg_hba.conf"]
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
       - ./db:/docker-entrypoint-initdb.d:ro
       - ./db/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
-      # First boot writes the generated role passwords here, once.
+      # First boot writes the generated owner password and gateway token here.
       - ./data/secrets:/bootstrap
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d headhunter"]
@@ -33,6 +40,7 @@ services:
     build: ./docker/php
     image: headhunter-php:local
     restart: unless-stopped
+    networks: [data, edge]
     depends_on:
       db:
         condition: service_healthy
@@ -59,6 +67,7 @@ services:
     build: ./docker/php
     image: headhunter-php:local
     restart: unless-stopped
+    networks: [data, edge]
     depends_on:
       db:
         condition: service_healthy
@@ -79,6 +88,7 @@ services:
   pwa:
     image: nginx:alpine
     restart: unless-stopped
+    networks: [edge]
     volumes:
       - ./pwa:/usr/share/nginx/html:ro
     ports:
@@ -87,6 +97,12 @@ services:
   gotenberg:
     image: gotenberg/gotenberg:8
     restart: unless-stopped
+    networks: [edge]
     command:
       - gotenberg
       - --chromium-disable-javascript=true
+
+networks:
+  data:
+    internal: true
+  edge:
