@@ -1,0 +1,6 @@
+# All runtime state: database, uploaded and rendered files, bootstrap credentials.
+/data/*
+!/data/README.md
+
+templates/assets/*.woff2
+templates/assets/*.ttf

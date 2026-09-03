@@ -1,0 +1,92 @@
+# No .env file: everything non-secret is literal here or in api/src/config.php.
+#
+# Every piece of mutable state lives under ./data on the host, so a backup is
+# "stop the stack, copy ./data". Nothing is stored inside a container.
+#
+# The database publishes no port. It is reachable only from this compose network,
+# which is what lets the worker connect without a password (see db/pg_hba.conf).
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: headhunter
+      POSTGRES_USER: postgres
+      # Applies to the local socket during bootstrap only; the running server
+      # uses the mounted pg_hba.conf below.
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command: ["postgres", "-c", "hba_file=/etc/postgresql/pg_hba.conf"]
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+      - ./db/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      # First boot writes the generated role passwords here, once.
+      - ./data/secrets:/bootstrap
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d headhunter"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: ./docker/php
+    image: headhunter-php:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    # Apache already drops to www-data; this just makes the bind-mounted
+    # storage directory writable by it on a fresh host.
+    command:
+      - sh
+      - -c
+      - >-
+        mkdir -p /var/www/html/storage/originals /var/www/html/storage/outputs &&
+        chown -R www-data:www-data /var/www/html/storage &&
+        exec apache2-foreground
+    volumes:
+      - ./api:/var/www/html/api
+      - ./templates:/var/www/html/templates
+      - ./data/storage:/var/www/html/storage
+      - ./docker/php/vhost.conf:/etc/apache2/sites-enabled/000-default.conf:ro
+      - ./docker/php/app.ini:/usr/local/etc/php/conf.d/app.ini:ro
+    ports:
+      # Reverse-proxy https://hunty.ir onto this.
+      - "0.0.0.0:9345:80"
+
+  worker:
+    build: ./docker/php
+    image: headhunter-php:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    # Runs as www-data so that files it writes are the same owner as the API's.
+    command:
+      - sh
+      - -c
+      - >-
+        chown -R www-data:www-data /var/www/html/storage &&
+        exec su www-data -s /bin/sh -c 'php /var/www/html/worker/worker.php'
+    volumes:
+      - ./api:/var/www/html/api
+      - ./worker:/var/www/html/worker
+      - ./templates:/var/www/html/templates
+      - ./data/storage:/var/www/html/storage
+      - ./docker/php/app.ini:/usr/local/etc/php/conf.d/app.ini:ro
+
+  pwa:
+    image: nginx:alpine
+    restart: unless-stopped
+    volumes:
+      - ./pwa:/usr/share/nginx/html:ro
+    ports:
+      - "0.0.0.0:9346:80"
+
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    restart: unless-stopped
+    command:
+      - gotenberg
+      - --chromium-disable-javascript=true
