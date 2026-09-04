@@ -9,8 +9,12 @@ declare(strict_types=1);
  * edited from the admin app. User passwords and tokens are hashed in the database.
  */
 
-/** Public origin of this API, as the outside world reaches it. */
-const BASE_URL = 'https://hunty.ir';
+/**
+ * Public origin of this API, as the outside world reaches it.
+ * The admin app is served separately from https://hunty.ir, so the two are
+ * different origins and the API answers with CORS headers.
+ */
+const BASE_URL = 'https://api.hunty.ir';
 
 /**
  * The database has one login role and no password. It sits on an internal Docker

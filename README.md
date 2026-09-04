@@ -129,9 +129,17 @@ internet access.
 
 ## 7. Put it behind TLS
 
-The API listens on `0.0.0.0:9345` over plain HTTP. Reverse-proxy
-`https://hunty.ir` onto it. A bearer token in cleartext is still a credential,
-so TLS at the proxy is not optional.
+Both services listen over plain HTTP on the host. Reverse-proxy two names onto
+them, with TLS terminated at the proxy — a bearer token in cleartext is still a
+credential, so this is not optional.
+
+| Name | Proxies to | Serves |
+|---|---|---|
+| `https://api.hunty.ir` | `0.0.0.0:9345` | the API |
+| `https://hunty.ir` | `0.0.0.0:9346` | the admin app |
+
+They are deliberately separate origins, so the API answers with CORS headers to
+let the admin app call it from `hunty.ir`. Both names need a certificate.
 
 ---
 
@@ -244,8 +252,8 @@ retention is your call.
 
 | | |
 |---|---|
-| API | `0.0.0.0:9345`, proxied as `https://hunty.ir` |
-| Admin app | `0.0.0.0:9346` |
+| API | `0.0.0.0:9345`, proxied as `https://api.hunty.ir` |
+| Admin app | `0.0.0.0:9346`, proxied as `https://hunty.ir` |
 | Domain constant | `api/src/config.php`, `pwa/app.js`, `gas/Code.gs` |
 | Logs | `docker compose logs -f worker` shows every polish and delivery |
 

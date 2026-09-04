@@ -9,7 +9,7 @@
  */
 
 /** Where the API lives. Change this one line if the domain ever moves. */
-const API_BASE = 'https://hunty.ir';
+const API_BASE = 'https://api.hunty.ir';
 
 const store = {
   get token() { return localStorage.getItem('hh.token') || ''; },

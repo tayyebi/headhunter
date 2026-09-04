@@ -63,7 +63,7 @@ services:
       - ./docker/php/vhost.conf:/etc/apache2/sites-enabled/000-default.conf:ro
       - ./docker/php/app.ini:/usr/local/etc/php/conf.d/app.ini:ro
     ports:
-      # Reverse-proxy https://hunty.ir onto this.
+      # Reverse-proxy https://api.hunty.ir onto this.
       - "0.0.0.0:9345:80"
 
   worker:
@@ -98,6 +98,7 @@ services:
     volumes:
       - ./pwa:/usr/share/nginx/html:ro
     ports:
+      # Reverse-proxy https://hunty.ir onto this.
       - "0.0.0.0:9346:80"
 
   gotenberg:

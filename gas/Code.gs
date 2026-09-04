@@ -22,7 +22,7 @@
  */
 
 /** Where the API lives. Change this one line if the domain ever moves. */
-var API_BASE = 'https://hunty.ir';
+var API_BASE = 'https://api.hunty.ir';
 
 function prop(name) {
   var value = PropertiesService.getScriptProperties().getProperty(name);
