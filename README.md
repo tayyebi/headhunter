@@ -45,6 +45,21 @@ docker compose up -d --build
 
 Five containers come up: `db`, `api`, `worker`, `pwa`, `gotenberg`.
 
+If Compose reports `failed to resolve reference "docker.io/library/headhunter-php:local"`,
+it is trying to download that image instead of building it. That tag only ever
+exists on your machine — it is built from `docker/php/Dockerfile`. Build it
+explicitly and start again:
+
+```sh
+docker compose build api
+docker compose up -d
+```
+
+The compose file pins `pull_policy: build` on `api` and `worker` to stop this
+happening, so you should only see it on an older checkout. Note that
+`docker compose pull` will always fail on those two services for the same
+reason — use `docker compose build` for them.
+
 ## 2. Read the credentials printed on first boot
 
 ```sh

@@ -38,7 +38,10 @@ services:
 
   api:
     build: ./docker/php
+    # Built locally, never published. Without pull_policy Compose can try to
+    # resolve this tag against Docker Hub and fail with "not found".
     image: headhunter-php:local
+    pull_policy: build
     restart: unless-stopped
     networks: [data, edge]
     depends_on:
@@ -65,7 +68,10 @@ services:
 
   worker:
     build: ./docker/php
+    # Built locally, never published. Without pull_policy Compose can try to
+    # resolve this tag against Docker Hub and fail with "not found".
     image: headhunter-php:local
+    pull_policy: build
     restart: unless-stopped
     networks: [data, edge]
     depends_on:
