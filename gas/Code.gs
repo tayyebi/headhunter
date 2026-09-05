@@ -85,19 +85,22 @@ function doPost(e) {
 // --------------------------------------------------------------------------
 
 function handleInboundUpdate(update) {
-  // Acknowledge before forwarding so the sender gets immediate receipt feedback
-  // even when API processing involves a file download or other slow work.
-  acknowledgeUpdate(update);
+  var updateId = update.update_id ? String(update.update_id) : null;
 
-  // Telegram redelivers an update if it does not get a prompt 200 back, and
-  // the app takes long enough (file download, DB writes) that this happens
-  // routinely. This is a mechanical replay-guard against that, not a
-  // decision about the update's content.
-  var cache = CacheService.getScriptCache();
-  var deliveredKey = update.update_id ? 'update:' + update.update_id : null;
-  if (deliveredKey && cache.get(deliveredKey)) {
+  // Claim the update before anything else — the acknowledgement included.
+  // Telegram redelivers an update it does not get a prompt 200 back for, and
+  // the app routinely takes longer than that (file download, DB writes), so
+  // redeliveries of an update already in flight are the normal case, not an
+  // edge case. Acknowledging first meant every one of them earned its own 👍
+  // and its own hourglass reply, which is the bot repeating itself at the
+  // sender while the first copy was still being worked on.
+  if (updateId && !claimUpdate(updateId)) {
     return jsonOutput(JSON.stringify({ ok: true, duplicate: true }));
   }
+
+  // Still ahead of the forward, so the sender gets receipt feedback right away
+  // rather than after the app has finished with the resume.
+  acknowledgeUpdate(update);
 
   var response = UrlFetchApp.fetch(API_BASE + '/telegram/webhook', {
     method: 'post',
@@ -109,17 +112,49 @@ function handleInboundUpdate(update) {
 
   // Let a failed forward throw, which makes this whole doPost fail loudly
   // instead of returning 200 — that is what makes Telegram retry the update
-  // once the app is back, instead of the update being silently dropped.
+  // once the app is back, instead of the update being silently dropped. The
+  // claim has to go back with it, or the retry is answered "duplicate" and the
+  // update is lost for good, having never been handled once.
   if (response.getResponseCode() >= 300) {
+    releaseUpdate(updateId);
     throw new Error('Forward to app failed: ' + response.getResponseCode() + ' ' + response.getContentText());
   }
 
-  // Marked only once the app has actually taken the update. Marking it any
-  // earlier means a failed forward burns the id, and Telegram's retry is then
-  // discarded as a duplicate — the update would be lost for good.
-  if (deliveredKey) cache.put(deliveredKey, '1', 21600);
-
   return jsonOutput(response.getContentText());
+}
+
+/**
+ * True if this is the first delivery of update_id. The script lock makes the
+ * check-and-mark one indivisible step, so two redeliveries landing at the same
+ * moment — separate Apps Script executions — cannot both come away believing
+ * they are the first.
+ */
+function claimUpdate(updateId) {
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+  } catch (err) {
+    // Never long-held, so this means something is badly wrong. Failing is the
+    // safe answer: Telegram retries, where claiming or dropping would risk a
+    // second acknowledgement or a lost message.
+    throw new Error('Could not take the update lock: ' + err.message);
+  }
+
+  try {
+    var cache = CacheService.getScriptCache();
+    var key = 'update:' + updateId;
+    if (cache.get(key)) return false;
+    cache.put(key, '1', 21600);
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Hands a claim back so Telegram's next redelivery gets a fresh attempt. */
+function releaseUpdate(updateId) {
+  if (!updateId) return;
+  CacheService.getScriptCache().remove('update:' + updateId);
 }
 
 /**
