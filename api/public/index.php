@@ -91,6 +91,7 @@ $routes = [
 
     ['GET',    '/settings',                   'r_settings_get',    'admin'],
     ['PUT',    '/settings',                   'r_settings_put',    'admin'],
+    ['POST',   '/settings/telegram-test',     'r_settings_telegram_test', 'admin'],
 ];
 
 try {

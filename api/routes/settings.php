@@ -66,3 +66,31 @@ function r_settings_put(array $p): array
 
     return r_settings_get([]);
 }
+
+/**
+ * Calls the gateway's getMe and, if a chat id is given (explicitly, or via
+ * the stored admin chat id), sends it a one-line test message.
+ */
+function r_settings_telegram_test(array $p): array
+{
+    $s = load_settings(db());
+    if (trim((string) $s['gateway_url']) === '') {
+        fail('No gateway_url is configured. Set one in Settings first.', 422);
+    }
+
+    $bot = telegram_call($s, 'getMe', []);
+
+    $result = [
+        'reachable' => true,
+        'bot'       => ['id' => $bot['id'] ?? null, 'username' => $bot['username'] ?? null],
+    ];
+
+    $chatId = trim((string) (body()['chat_id'] ?? $s['telegram_admin_chat_id']));
+    if ($chatId !== '') {
+        telegram_send_message($s, $chatId, 'headhunter connectivity test ' . gmdate('c'));
+        $result['message_sent'] = true;
+        $result['chat_id']      = $chatId;
+    }
+
+    return ['telegram' => $result];
+}

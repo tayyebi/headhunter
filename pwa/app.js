@@ -636,7 +636,21 @@ async function viewSettings() {
     field('Gateway URL', 'gateway_url', s.gateway_url),
     field('Telegram admin chat id (optional)', 'telegram_admin_chat_id', s.telegram_admin_chat_id),
     el('p', { class: 'muted', text: 'Gets a private message whenever the Telegram webhook handler errors. Send /whoami to the bot to read off a chat id.' }),
-    el('button', { class: 'primary', type: 'submit', text: 'Save settings' })
+    el('button', { class: 'primary', type: 'submit', text: 'Save settings' }),
+    el('button', {
+      type: 'button',
+      onclick: async (event) => {
+        const form = event.target.closest('form');
+        const chatId = String(new FormData(form).get('telegram_admin_chat_id') || '').trim();
+        try {
+          const res = await api('POST', '/settings/telegram-test', chatId ? { chat_id: chatId } : {});
+          const bot = res.telegram.bot;
+          const sent = res.telegram.message_sent ? ` — test message sent to ${res.telegram.chat_id}` : ' — no chat id to message';
+          toast(`Connected to @${bot.username}${sent}`);
+        } catch (err) { toast(err.message, true); }
+      },
+      text: 'Test Telegram connection'
+    })
   ]);
 
   show(form);
