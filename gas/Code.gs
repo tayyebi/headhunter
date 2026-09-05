@@ -25,6 +25,13 @@
  *        GATEWAY_SECRET   any long random string
  *   3. Put the same web app URL and GATEWAY_SECRET into the admin app's Settings screen.
  *   4. Run setWebhook() once from the editor.
+ *
+ * Updating the code later:
+ *   Deploy > Manage deployments > pencil icon on the deployment above >
+ *   Version: "New version" > Deploy. That keeps the same /exec URL and picks
+ *   up the new code. Do NOT use "New deployment" for updates — that creates a
+ *   second URL while the first deployment keeps serving whatever code existed
+ *   when it was created, which is why "only the first version worked."
  */
 
 /** Where the API lives. Change this one line if the domain ever moves. */
@@ -53,14 +60,6 @@ function telegram(method, payload) {
   return body.result;
 }
 
-/** A replay-guard against redelivery, keyed by whatever the caller considers unique. */
-function isDuplicate(key) {
-  var cache = CacheService.getScriptCache();
-  if (cache.get(key)) return true;
-  cache.put(key, '1', 21600);
-  return false;
-}
-
 function jsonOutput(text) {
   return ContentService.createTextOutput(text).setMimeType(ContentService.MimeType.JSON);
 }
@@ -86,15 +85,17 @@ function doPost(e) {
 // --------------------------------------------------------------------------
 
 function handleInboundUpdate(update) {
-  // React before forwarding so the sender gets immediate receipt feedback even
-  // when API processing involves a file download or other slow work.
-  reactToUpdate(update);
+  // Acknowledge before forwarding so the sender gets immediate receipt feedback
+  // even when API processing involves a file download or other slow work.
+  acknowledgeUpdate(update);
 
   // Telegram redelivers an update if it does not get a prompt 200 back, and
   // the app takes long enough (file download, DB writes) that this happens
   // routinely. This is a mechanical replay-guard against that, not a
   // decision about the update's content.
-  if (update.update_id && isDuplicate('update:' + update.update_id)) {
+  var cache = CacheService.getScriptCache();
+  var deliveredKey = update.update_id ? 'update:' + update.update_id : null;
+  if (deliveredKey && cache.get(deliveredKey)) {
     return jsonOutput(JSON.stringify({ ok: true, duplicate: true }));
   }
 
@@ -113,22 +114,54 @@ function handleInboundUpdate(update) {
     throw new Error('Forward to app failed: ' + response.getResponseCode() + ' ' + response.getContentText());
   }
 
+  // Marked only once the app has actually taken the update. Marking it any
+  // earlier means a failed forward burns the id, and Telegram's retry is then
+  // discarded as a duplicate — the update would be lost for good.
+  if (deliveredKey) cache.put(deliveredKey, '1', 21600);
+
   return jsonOutput(response.getContentText());
 }
 
-function reactToUpdate(update) {
+/**
+ * Tells the sender their message landed, two ways: a 👍 reaction, and an
+ * hourglass reply. The reaction is easy to miss and Telegram declines it
+ * outright in some chats, so the reply is the receipt that always shows.
+ * Both are best effort — neither failing may stop the update reaching the app.
+ */
+function acknowledgeUpdate(update) {
   var message = update.message || update.edited_message;
   if (!message || !message.chat || !message.message_id) return;
-  try {
-    telegram('setMessageReaction', {
-      chat_id: String(message.chat.id),
-      message_id: message.message_id,
-      reaction: [{ type: 'emoji', emoji: '👍' }]
-    });
-  } catch (err) {
-    // Receipt acknowledgement is best effort; forwarding must still happen.
-    console.log('Reaction failed: ' + err.message);
+
+  var chatId = String(message.chat.id);
+
+  bestEffort('setMessageReaction', {
+    chat_id: chatId,
+    message_id: message.message_id,
+    reaction: [{ type: 'emoji', emoji: '👍' }]
+  });
+
+  bestEffort('sendMessage', {
+    chat_id: chatId,
+    text: '⏳ Got it — working on this.',
+    reply_parameters: { message_id: message.message_id }
+  });
+}
+
+/**
+ * A Telegram call that must never take the caller down with it. Retries once,
+ * because transient 5xx and per-chat rate limits are common enough that a
+ * single attempt visibly drops receipts.
+ */
+function bestEffort(method, params) {
+  for (var attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return telegram(method, params);
+    } catch (err) {
+      if (attempt === 2) console.log(method + ' failed: ' + err.message);
+      else Utilities.sleep(400);
+    }
   }
+  return null;
 }
 
 // --------------------------------------------------------------------------
@@ -180,13 +213,37 @@ function handleRelay(secret, envelope) {
 
 function setWebhook() {
   var url = ScriptApp.getService().getUrl();
-  var result = telegram('setWebhook', { url: url, allowed_updates: ['message'] });
+  var result = telegram('setWebhook', { url: url, allowed_updates: ['message', 'edited_message'] });
   console.log('webhook set to ' + url + ': ' + JSON.stringify(result));
   console.log('Set gateway_url in the admin Settings screen to: ' + url + '?secret=' + prop('GATEWAY_SECRET'));
 }
 
 function deleteWebhook() {
   console.log(JSON.stringify(telegram('deleteWebhook', {})));
+}
+
+/**
+ * Start clean: throw away every update Telegram is still holding, then point
+ * the webhook at this deployment's URL. Use it when the bot is chewing through
+ * a backlog of old messages, or after a URL change left updates queued up.
+ */
+function resetWebhook() {
+  telegram('deleteWebhook', { drop_pending_updates: true });
+
+  var url = ScriptApp.getService().getUrl();
+  telegram('setWebhook', {
+    url: url,
+    allowed_updates: ['message', 'edited_message'],
+    drop_pending_updates: true
+  });
+
+  console.log('webhook reset to ' + url);
+  console.log(JSON.stringify(telegram('getWebhookInfo', {})));
+}
+
+/** Prints the live webhook URL and how many updates are queued behind it. */
+function webhookInfo() {
+  console.log(JSON.stringify(telegram('getWebhookInfo', {}), null, 2));
 }
 
 function testApiAuth() {

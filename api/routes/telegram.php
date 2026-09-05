@@ -20,6 +20,11 @@ function r_telegram_webhook(array $p): array
     try {
         telegram_handle_update($settings, $update);
     } catch (Throwable $e) {
+        // The claim is committed by now, so without this the update is spent:
+        // Telegram's retry would be answered "duplicate" and the message would
+        // be dropped for good, having never been handled once.
+        release_telegram_update($updateId);
+
         error_log('[telegram] webhook error: ' . $e->getMessage());
         telegram_notify_admin(
             $settings,
@@ -37,6 +42,16 @@ function claim_telegram_update(int $updateId): bool
     $stmt = db()->prepare('INSERT INTO telegram_updates (update_id) VALUES (:id) ON CONFLICT DO NOTHING');
     $stmt->execute([':id' => $updateId]);
     return $stmt->rowCount() > 0;
+}
+
+/** Hands an update_id back so a later redelivery gets a fresh attempt. */
+function release_telegram_update(int $updateId): void
+{
+    if ($updateId === 0) {
+        return;
+    }
+    $stmt = db()->prepare('DELETE FROM telegram_updates WHERE update_id = :id');
+    $stmt->execute([':id' => $updateId]);
 }
 
 function telegram_handle_update(array $settings, array $update): void
