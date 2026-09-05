@@ -99,6 +99,24 @@ function telegram_send_document(
     telegram_call($settings, 'sendDocument', $params, $attachmentUrl, 'document', $idempotencyKey);
 }
 
+/**
+ * Acknowledges receipt of an incoming message with a 👍 reaction. Best-effort:
+ * a reaction failing (message too old, chat does not allow reactions, gateway
+ * hiccup) must never block actually handling the message.
+ */
+function telegram_react(array $settings, string $chatId, int $messageId, string $emoji = '👍'): void
+{
+    try {
+        telegram_call($settings, 'setMessageReaction', [
+            'chat_id'    => $chatId,
+            'message_id' => $messageId,
+            'reaction'   => [['type' => 'emoji', 'emoji' => $emoji]],
+        ]);
+    } catch (Throwable $e) {
+        error_log('[telegram] failed to react: ' . $e->getMessage());
+    }
+}
+
 /** Best-effort PV alert. Swallows its own errors so a broken chat id or a
  * down gateway never turns into a second unhandled error. */
 function telegram_notify_admin(array $settings, string $text): void
