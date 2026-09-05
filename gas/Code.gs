@@ -17,6 +17,9 @@
  *        API_TOKEN        the gateway token (printed on first boot, or reissued
  *                         from the admin app's Users screen)
  *        GATEWAY_SECRET   any long random string
+ *        ADMIN_ID         optional. A chat id (a normal user is fine) that gets
+ *                         a PV message whenever doPost throws. Message the bot
+ *                         privately and send /whoami to read off your chat id.
  *   3. Put the same web app URL and GATEWAY_SECRET into the admin app's Settings screen.
  *   4. Run setWebhook() once from the editor.
  */
@@ -28,6 +31,22 @@ function prop(name) {
   var value = PropertiesService.getScriptProperties().getProperty(name);
   if (!value) throw new Error('Missing script property: ' + name);
   return value;
+}
+
+function optionalProp(name) {
+  return PropertiesService.getScriptProperties().getProperty(name) || null;
+}
+
+// Best-effort PV alert to ADMIN_ID. Swallows its own errors so a broken/unset
+// ADMIN_ID or a down Telegram API never turns into a second unhandled error.
+function notifyAdmin(message) {
+  var id = optionalProp('ADMIN_ID');
+  if (!id) return;
+  try {
+    telegram('sendMessage', { chat_id: id, text: message });
+  } catch (err) {
+    console.error('Failed to notify admin: ' + err);
+  }
 }
 
 function apiHeaders() {
@@ -66,15 +85,33 @@ function doPost(e) {
     var secret = (e.parameter && e.parameter.secret) || null;
     if (payload.external_ref && payload.kind) {
       handleDelivery(payload, secret);
-    } else {
+    } else if (!isDuplicateUpdate(payload.update_id)) {
       handleTelegramUpdate(payload);
     }
   } catch (err) {
     console.error(err);
+    var context = (payload.external_ref && payload.kind)
+      ? 'delivery ' + (payload.delivery_id || '(no id)') + ' to ' + payload.external_ref
+      : 'update ' + (payload.update_id || '(no id)');
+    notifyAdmin('headhunter gateway error on ' + context + ':\n' + (err && err.stack ? err.stack : err));
     // Always 200 to Telegram, otherwise it retries the same update forever.
   }
 
   return ok;
+}
+
+// Telegram retries a webhook update if it does not get a prompt 200 back.
+// handleTelegramUpdate does several sequential network calls (sendMessage,
+// getFile, the file download, the /intake POST) before doPost can respond, so
+// a slow run causes Telegram to redeliver the same update while the first run
+// is still going, and the candidate sees the same reply more than once.
+function isDuplicateUpdate(updateId) {
+  if (!updateId) return false;
+  var cache = CacheService.getScriptCache();
+  var key = 'update:' + updateId;
+  if (cache.get(key)) return true;
+  cache.put(key, '1', 21600);
+  return false;
 }
 
 // --------------------------------------------------------------------------
@@ -93,6 +130,15 @@ function handleTelegramUpdate(update) {
       chat_id: chatId,
       text: 'سلام! رزومه‌تان را به صورت فایل PDF همین‌جا بفرستید تا بررسی و ویرایش شود.\n\n' +
             'Send your resume here as a PDF file and we will polish it for you.'
+    });
+    return;
+  }
+
+  if (text.indexOf('/whoami') === 0) {
+    telegram('sendMessage', {
+      chat_id: chatId,
+      message_thread_id: message.message_thread_id,
+      text: whoamiText(message)
     });
     return;
   }
@@ -145,6 +191,26 @@ function displayName(from) {
   if (!from) return '';
   return [from.first_name, from.last_name].filter(Boolean).join(' ') ||
          (from.username ? '@' + from.username : '');
+}
+
+// Dumps the identifiers of whoever/wherever sent /whoami: chat id (needed for
+// ADMIN_ID or external_ref lookups), the forum topic id if this is a topic in
+// a supergroup, and the sender's own id/username.
+function whoamiText(message) {
+  var chat = message.chat;
+  var from = message.from || {};
+  var lines = [
+    'chat_id: ' + chat.id,
+    'chat_type: ' + chat.type
+  ];
+  if (chat.title) lines.push('chat_title: ' + chat.title);
+  if (message.message_thread_id) lines.push('topic_id: ' + message.message_thread_id);
+  lines.push('user_id: ' + (from.id !== undefined ? from.id : ''));
+  if (from.username) lines.push('username: @' + from.username);
+  var name = displayName(from);
+  if (name) lines.push('name: ' + name);
+  if (from.language_code) lines.push('language_code: ' + from.language_code);
+  return lines.join('\n');
 }
 
 function downloadTelegramFile(fileId, fileName) {
