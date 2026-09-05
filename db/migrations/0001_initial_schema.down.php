@@ -1,0 +1,15 @@
+<?php
+declare(strict_types=1);
+
+return function (PDO $pdo): void {
+    $pdo->exec(<<<'SQL'
+        DROP TABLE IF EXISTS settings;
+        DROP TABLE IF EXISTS deliveries;
+        DROP TABLE IF EXISTS runs;
+        DROP TABLE IF EXISTS resumes;
+        DROP TABLE IF EXISTS candidates;
+        DROP TABLE IF EXISTS sessions;
+        DROP TABLE IF EXISTS users;
+        DROP EXTENSION IF EXISTS pgcrypto;
+        SQL);
+};

@@ -4,7 +4,7 @@ declare(strict_types=1);
 /**
  * Runs on every boot of the api and worker containers, before either starts
  * serving. Applying a schema change is now "drop a new
- * db/migrations/NNNN_name.up.sql (+ .down.sql) pair in the repo", never a
+ * db/migrations/NNNN_name.up.php (+ .down.php) pair in the repo", never a
  * by-hand psql session.
  *
  * Usage: php migrate.php [up|down]   (default: up)

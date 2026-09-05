@@ -216,31 +216,32 @@ leave you with no active owner.
 
 There is no first-boot-only script anywhere in this project. `api/bin/migrate.php`
 runs before the `api` and `worker` containers start serving, **every time they
-boot**. Each `db/migrations/NNNN_name.up.sql` not yet recorded in the
+boot**. Each `db/migrations/NNNN_name.up.php` not yet recorded in the
 `schema_migrations` table is applied, in order; already-applied ones are
 skipped. Shipping a schema change is: add a new numbered pair of files,
 redeploy. Nothing to run by hand, no separate migration step to remember.
 
 | File | Does |
 |---|---|
-| `0001_initial_schema.up.sql` | Every table, and the seeded `settings` row (default AI instruction) |
+| `0001_initial_schema.up.php` | Every table, and the seeded `settings` row (default AI instruction) |
 | `0002_bootstrap.up.php` | Creates the `api` database role and the `owner`/`gateway` accounts, and prints their credentials once |
-| `0003_telegram_relay.up.sql`, and any added since | Ordinary schema changes |
+| `0003_telegram_relay.up.php`, and any added since | Ordinary schema changes |
 
-Most migrations are plain SQL. `0002_bootstrap` is PHP because it has to
-generate and print secrets, not just alter the schema — the runner treats a
-`.up.php` file the same as `.up.sql`: run once, in order, tracked by name. It
-runs as the `postgres` role (trusted the same way as everything else on the
-internal network, see `pg_hba.conf`), since the `api` role deliberately has
-no DDL rights. An advisory lock keeps the `api` and `worker` containers,
-which can boot at the same moment, from racing to apply the same migration
-twice.
+Every migration is plain PHP, including pure schema changes — a `.up.php`
+file just returns a `function (PDO $pdo): void` that calls `$pdo->exec()`, so
+there is one file format to read, not SQL files plus a special case for the
+one migration (`0002_bootstrap`) that needs real code to generate and print
+secrets. Migrations run as the `postgres` role (trusted the same way as
+everything else on the internal network, see `pg_hba.conf`), since the `api`
+role deliberately has no DDL rights. An advisory lock keeps the `api` and
+`worker` containers, which can boot at the same moment, from racing to apply
+the same migration twice.
 
 Generated secrets never touch the repository: only a bcrypt hash and a SHA-256
 hash reach the database, and the plaintext exists only in that one log line
 (and, best-effort, in `data/secrets/initial-credentials.txt`).
 
-Each `NNNN_name.up.*` has a matching `NNNN_name.down.sql` for manual rollback:
+Each `NNNN_name.up.php` has a matching `NNNN_name.down.php` for manual rollback:
 
 ```sh
 docker compose exec api php /var/www/html/api/bin/migrate.php down
@@ -282,7 +283,7 @@ retention is your call.
 api/                public/index.php is the router and the capability table
   src/              config, db, auth, files, ai, pdf, gateway, http client, migrate
   routes/           one file per resource
-  bin/migrate.php   applies pending db/migrations/*.up.* on every api/worker boot
+  bin/migrate.php   applies pending db/migrations/*.up.php on every api/worker boot
 worker/worker.php   two queues: AI extraction, and delivery pushes
 templates/          resume PDF template (Persian RTL and English LTR)
 pwa/                the admin app

@@ -3,13 +3,14 @@ declare(strict_types=1);
 
 /**
  * Standard numbered up/down migrations, applied automatically on every boot
- * of the api and worker containers. Each db/migrations/NNNN_name.up.sql (or
- * .up.php, for the one migration that needs real code — generating and
- * printing secrets) is applied once and recorded in schema_migrations;
- * shipping a schema change is "add a new NNNN_name.up.sql / .down.sql pair",
- * never a by-hand psql session. `migrate_down` rolls back the single most
- * recently applied migration, for manual/CLI use only — nothing calls it on
- * boot.
+ * of the api and worker containers. Every migration is plain PHP — even a
+ * pure schema change is just a closure that calls $pdo->exec() — so there is
+ * one file format to read, not SQL files plus a special-cased script for the
+ * one migration that needs real code. Each db/migrations/NNNN_name.up.php is
+ * applied once and recorded in schema_migrations; shipping a schema change is
+ * "add a new NNNN_name.up.php / .down.php pair", never a by-hand psql
+ * session. `migrate_down` rolls back the single most recently applied
+ * migration, for manual/CLI use only — nothing calls it on boot.
  */
 function migrate_up(PDO $pdo, string $dir): void
 {
@@ -124,22 +125,19 @@ function role_exists(PDO $pdo, string $role): bool
 }
 
 /**
- * Groups db/migrations/NNNN_name.{up,down}.{sql,php} by "NNNN_name", in
- * filename (i.e. numeric) order.
+ * Groups db/migrations/NNNN_name.{up,down}.php by "NNNN_name", in filename
+ * (i.e. numeric) order.
  *
  * @return array<string, array{up?: string, down?: string}>
  */
 function discover_migrations(string $dir): array
 {
-    $files = array_merge(
-        glob(rtrim($dir, '/') . '/*.sql') ?: [],
-        glob(rtrim($dir, '/') . '/*.php') ?: []
-    );
+    $files = glob(rtrim($dir, '/') . '/*.php') ?: [];
     sort($files);
 
     $migrations = [];
     foreach ($files as $file) {
-        if (!preg_match('/^(.+)\.(up|down)\.(sql|php)$/', basename($file), $m)) {
+        if (!preg_match('/^(.+)\.(up|down)\.php$/', basename($file), $m)) {
             continue;
         }
         $migrations[$m[1]][$m[2]] = $file;
@@ -149,20 +147,16 @@ function discover_migrations(string $dir): array
     return $migrations;
 }
 
-/** Runs one .sql file, or one .php file that returns a `function (PDO $pdo): void`, in a transaction. */
+/** Runs one file that returns a `function (PDO $pdo): void`, in a transaction. */
 function run_step(PDO $pdo, string $file): void
 {
     $pdo->beginTransaction();
     try {
-        if (pathinfo($file, PATHINFO_EXTENSION) === 'php') {
-            $step = require $file;
-            if (!is_callable($step)) {
-                throw new RuntimeException(basename($file) . ' must return a callable.');
-            }
-            $step($pdo);
-        } else {
-            $pdo->exec((string) file_get_contents($file));
+        $step = require $file;
+        if (!is_callable($step)) {
+            throw new RuntimeException(basename($file) . ' must return a callable.');
         }
+        $step($pdo);
         $pdo->commit();
     } catch (Throwable $e) {
         $pdo->rollBack();
