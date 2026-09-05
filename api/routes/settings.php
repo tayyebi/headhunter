@@ -25,6 +25,7 @@ function r_settings_get(array $p): array
         'temperature'        => (float) $s['temperature'],
         'gateway_url'        => $s['gateway_url'],
         'gateway_secret_set' => $s['gateway_secret'] !== '',
+        'telegram_admin_chat_id' => $s['telegram_admin_chat_id'],
         'updated_at'         => $s['updated_at'],
     ]];
 }
@@ -35,7 +36,7 @@ function r_settings_put(array $p): array
     $sets   = [];
     $params = [];
 
-    $plain = ['system_instruction', 'ai_base_url', 'ai_model', 'gateway_url'];
+    $plain = ['system_instruction', 'ai_base_url', 'ai_model', 'gateway_url', 'telegram_admin_chat_id'];
     foreach ($plain as $column) {
         if (array_key_exists($column, $b)) {
             $sets[] = "{$column} = :{$column}";

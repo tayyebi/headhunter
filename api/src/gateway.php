@@ -2,43 +2,25 @@
 declare(strict_types=1);
 
 /**
- * Push one delivery to the configured gateway webhook. This API has no idea the
- * gateway happens to speak Telegram: it sends an opaque external_ref, some text,
- * and a URL where the attachment can be fetched.
+ * Push one delivery out. The delivery is already Telegram-shaped by this
+ * point (see telegram.php); this just decides sendMessage vs sendDocument.
  */
-function gateway_push(array $settings, array $payload): array
+function gateway_push(array $settings, array $delivery): void
 {
-    $url = trim((string) $settings['gateway_url']);
-    if ($url === '') {
-        throw new RuntimeException('No gateway_url is configured. Set one in Settings.');
+    $chatId = preg_replace('/^telegram:/', '', (string) $delivery['external_ref']);
+
+    if ($delivery['kind'] === 'document' && $delivery['file_path'] !== null) {
+        $fileUrl = rtrim(BASE_URL, '/') . '/deliveries/' . $delivery['id'] . '/file';
+        telegram_send_document(
+            $settings,
+            $chatId,
+            $fileUrl,
+            (string) ($delivery['file_name'] ?? ''),
+            (string) $delivery['body'],
+            (string) $delivery['idempotency_key']
+        );
+        return;
     }
 
-    $headers = ['X-Gateway-Secret: ' . (string) $settings['gateway_secret']];
-    [$status, $raw, $curlError] = http_post_json($url, $headers, $payload, 60);
-
-    if ($curlError !== '') {
-        throw new RuntimeException('Gateway unreachable: ' . $curlError);
-    }
-    if ($status < 200 || $status >= 300) {
-        throw new RuntimeException('Gateway returned HTTP ' . $status . ': ' . substr($raw, 0, 300));
-    }
-
-    return ['status' => $status, 'body' => substr($raw, 0, 1000)];
-}
-
-function delivery_payload(array $delivery): array
-{
-    $base = rtrim(BASE_URL, '/');
-
-    return [
-        'external_ref' => $delivery['external_ref'],
-        'kind'         => $delivery['kind'],
-        'text'         => $delivery['body'],
-        'file_url'     => $delivery['file_path'] === null ? null : $base . '/deliveries/' . $delivery['id'] . '/file',
-        'file_name'    => $delivery['file_name'],
-        'delivery_id'  => (int) $delivery['id'],
-        // Stable across retries of the same delivery, so the gateway can refuse
-        // to send the same document twice when a push times out after it worked.
-        'idempotency_key' => $delivery['idempotency_key'],
-    ];
+    telegram_send_message($settings, $chatId, (string) $delivery['body'], (string) $delivery['idempotency_key']);
 }

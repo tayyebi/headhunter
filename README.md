@@ -23,7 +23,7 @@ polish, governed by one instruction you edit in the app.
 |---|---|---|
 | **API** | Plain PHP, no framework, no Composer | Never — edit and reload |
 | **Admin app** | A PWA; installs to the Android home screen | Never — edit and reload |
-| **Gateway** | Google Apps Script Telegram bot | Paste and deploy |
+| **Gateway** | Google Apps Script, a dumb relay to Telegram | Paste and deploy |
 | **Worker** | Runs the AI and the PDF render off a queue | Never |
 
 The database has exactly one client. It sits on an internal Docker network with
@@ -100,8 +100,17 @@ Nothing works until the AI is configured. Go to **Settings**:
 | Temperature | Defaults to `0.2`. |
 | Gateway URL | The Apps Script web app URL **with `?secret=…` appended** (step 5). |
 | Gateway secret | Any long random string. Write-only. |
+| Telegram admin chat id | Optional. Gets a PV message whenever the Telegram webhook handler throws. Send `/whoami` to the bot to read one off. |
 
 ## 5. Connect the Telegram bot
+
+The API server cannot reach `api.telegram.org` directly, but Google's servers
+can, so `gas/Code.gs` sits in the middle purely as a network bridge. It does
+not know what a command is or what to say to anyone — it forwards every
+Telegram update to the API untouched, and otherwise just makes whatever
+Telegram API call the API asks it to make. All of that logic (`/start`,
+`/whoami`, what counts as a resume, what to reply) lives in the API, in
+`api/src/telegram.php` and `api/routes/telegram.php`.
 
 1. Create a bot with `@BotFather` and keep its token.
 2. Paste `gas/Code.gs` into a new Apps Script project.
@@ -161,7 +170,7 @@ First boot creates exactly two accounts and one PostgreSQL role.
 |---|---|
 | `owner` | Everything, plus manage accounts, sessions and tokens |
 | `admin` | Candidates, resumes, runs, deliveries, settings |
-| `gateway` | Two endpoints only: accept a resume, fetch a file it was asked to send |
+| `gateway` | Two endpoints only: accept a forwarded Telegram update, fetch a file it was asked to send |
 
 A `gateway` account cannot read the AI API key, list candidates, or see a run.
 Every route declares the capability it needs in `api/public/index.php`, and
@@ -264,7 +273,7 @@ api/                public/index.php is the router and the capability table
 worker/worker.php   two queues: AI extraction, and delivery pushes
 templates/          resume PDF template (Persian RTL and English LTR)
 pwa/                the admin app
-gas/Code.gs         the Telegram gateway
+gas/Code.gs         dumb relay to Telegram (holds the bot token)
 db/                 schema and first-boot bootstrap
 data/               all runtime state (gitignored)
 ```

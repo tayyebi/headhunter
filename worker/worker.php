@@ -17,6 +17,7 @@ require $api . '/src/files.php';
 require $api . '/src/client.php';
 require $api . '/src/ai.php';
 require $api . '/src/pdf.php';
+require $api . '/src/telegram.php';
 require $api . '/src/gateway.php';
 
 const MAX_DELIVERY_ATTEMPTS = 6;
@@ -168,7 +169,7 @@ function process_delivery(PDO $pdo, array $delivery): void
         throw new RuntimeException('Candidate has no external_ref, so the gateway cannot address them.');
     }
 
-    gateway_push(worker_settings($pdo), delivery_payload($delivery));
+    gateway_push(worker_settings($pdo), $delivery);
 
     $pdo->prepare("UPDATE deliveries SET status = 'sent', sent_at = now(), last_error = NULL WHERE id = :id")
         ->execute([':id' => $id]);

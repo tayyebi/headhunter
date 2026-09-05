@@ -71,7 +71,7 @@ function r_candidates_upsert(array $p): array
     return ['candidate' => upsert_candidate((string) $ref, (string) ($b['display_name'] ?? ''), $b['phone'] ?? null)];
 }
 
-/** Shared by /candidates and /intake. */
+/** Shared by /candidates and the Telegram webhook. */
 function upsert_candidate(string $externalRef, string $displayName, ?string $phone): array
 {
     $stmt = db()->prepare(

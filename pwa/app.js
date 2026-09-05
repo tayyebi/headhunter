@@ -609,7 +609,8 @@ async function viewSettings() {
         ai_base_url: f.get('ai_base_url'),
         ai_model: f.get('ai_model'),
         temperature: Number(f.get('temperature')),
-        gateway_url: f.get('gateway_url')
+        gateway_url: f.get('gateway_url'),
+        telegram_admin_chat_id: f.get('telegram_admin_chat_id')
       };
       if (String(f.get('ai_api_key')).trim()) payload.ai_api_key = f.get('ai_api_key');
       if (String(f.get('gateway_secret')).trim()) payload.gateway_secret = f.get('gateway_secret');
@@ -635,6 +636,8 @@ async function viewSettings() {
     el('p', { class: 'muted', text: 'The API pushes finished files here. For Google Apps Script use the web app URL with ?secret=<your gateway secret> appended, because Apps Script cannot read request headers.' }),
     field('Gateway URL', 'gateway_url', s.gateway_url),
     field(s.gateway_secret_set ? 'Gateway secret (stored)' : 'Gateway secret (not set)', 'gateway_secret', '', 'password'),
+    field('Telegram admin chat id (optional)', 'telegram_admin_chat_id', s.telegram_admin_chat_id),
+    el('p', { class: 'muted', text: 'Gets a private message whenever the Telegram webhook handler errors. Send /whoami to the bot to read off a chat id.' }),
     el('button', { class: 'primary', type: 'submit', text: 'Save settings' })
   ]);
 

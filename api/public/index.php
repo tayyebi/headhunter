@@ -11,6 +11,7 @@ require $root . '/src/files.php';
 require $root . '/src/client.php';
 require $root . '/src/ai.php';
 require $root . '/src/pdf.php';
+require $root . '/src/telegram.php';
 require $root . '/src/gateway.php';
 
 require $root . '/routes/auth.php';
@@ -20,7 +21,7 @@ require $root . '/routes/resumes.php';
 require $root . '/routes/runs.php';
 require $root . '/routes/deliveries.php';
 require $root . '/routes/settings.php';
-require $root . '/routes/intake.php';
+require $root . '/routes/telegram.php';
 
 cors();
 
@@ -69,8 +70,8 @@ $routes = [
     ['PATCH',  '/candidates/{id}',            'r_candidate_patch', 'admin'],
     ['POST',   '/candidates/{id}/resumes',    'r_resume_upload',   'admin'],
 
-    // The gateway's two endpoints: hand us a resume, fetch a file we asked it to send.
-    ['POST',   '/intake',                     'r_intake',          'user'],
+    // The gateway's two endpoints: forward a Telegram update, fetch a file we asked it to send.
+    ['POST',   '/telegram/webhook',           'r_telegram_webhook', 'user'],
     ['GET',    '/deliveries/{id}/file',       'r_delivery_file',   'user'],
 
     ['GET',    '/resumes/{id}',               'r_resume_get',      'admin'],

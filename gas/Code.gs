@@ -1,14 +1,20 @@
 /**
- * Telegram gateway for the headhunter API.
+ * Telegram relay for the headhunter API.
  *
- * This is the ONLY component that knows Telegram exists. To the REST API it is
- * just a client holding a bearer token for a machine account, and the API
- * addresses candidates by an opaque `external_ref` that we define here as
- * "telegram:<chat id>".
+ * The server behind API_BASE cannot reach api.telegram.org directly, but
+ * Google's servers can, so this script is only a network bridge between the
+ * two. It has no idea what a command is, what a resume is, or what to say to
+ * anyone — it just carries bytes across the gap. All of that lives in the
+ * app now.
  *
- * doPost handles two kinds of request:
- *   1. Telegram webhook updates  (candidate -> us)
- *   2. Delivery pushes from our API (us -> candidate), authenticated with a shared secret
+ * doPost handles two shapes of request, told apart only by the ?secret= query
+ * parameter (Apps Script cannot read request headers, so a shared secret has
+ * to travel as a query parameter):
+ *
+ *   1. No secret            -> a Telegram webhook update. Forward the raw
+ *                               body to the app; return whatever it returns.
+ *   2. secret === GATEWAY_SECRET -> a relay request from the app: "call this
+ *                               Telegram Bot API method with these params."
  *
  * Setup:
  *   1. Deploy > New deployment > Web app, execute as me, access "Anyone".
@@ -17,9 +23,6 @@
  *        API_TOKEN        the gateway token (printed on first boot, or reissued
  *                         from the admin app's Users screen)
  *        GATEWAY_SECRET   any long random string
- *        ADMIN_ID         optional. A chat id (a normal user is fine) that gets
- *                         a PV message whenever doPost throws. Message the bot
- *                         privately and send /whoami to read off your chat id.
  *   3. Put the same web app URL and GATEWAY_SECRET into the admin app's Settings screen.
  *   4. Run setWebhook() once from the editor.
  */
@@ -33,26 +36,11 @@ function prop(name) {
   return value;
 }
 
-function optionalProp(name) {
-  return PropertiesService.getScriptProperties().getProperty(name) || null;
-}
-
-// Best-effort PV alert to ADMIN_ID. Swallows its own errors so a broken/unset
-// ADMIN_ID or a down Telegram API never turns into a second unhandled error.
-function notifyAdmin(message) {
-  var id = optionalProp('ADMIN_ID');
-  if (!id) return;
-  try {
-    telegram('sendMessage', { chat_id: id, text: message });
-  } catch (err) {
-    console.error('Failed to notify admin: ' + err);
-  }
-}
-
 function apiHeaders() {
   return { Authorization: 'Bearer ' + prop('API_TOKEN') };
 }
 
+/** Calls a Telegram Bot API method and returns its `result`. Throws on failure. */
 function telegram(method, payload) {
   var response = UrlFetchApp.fetch('https://api.telegram.org/bot' + prop('BOT_TOKEN') + '/' + method, {
     method: 'post',
@@ -65,215 +53,106 @@ function telegram(method, payload) {
   return body.result;
 }
 
-// --------------------------------------------------------------------------
-// Entry point
-// --------------------------------------------------------------------------
-
-function doPost(e) {
-  var ok = ContentService.createTextOutput(JSON.stringify({ ok: true }))
-    .setMimeType(ContentService.MimeType.JSON);
-
-  var payload;
-  try {
-    payload = JSON.parse(e.postData.contents);
-  } catch (err) {
-    return ok;
-  }
-
-  try {
-    // A delivery push carries our own secret; a Telegram update never does.
-    var secret = (e.parameter && e.parameter.secret) || null;
-    if (payload.external_ref && payload.kind) {
-      handleDelivery(payload, secret);
-    } else if (!isDuplicateUpdate(payload.update_id)) {
-      handleTelegramUpdate(payload);
-    }
-  } catch (err) {
-    console.error(err);
-    var context = (payload.external_ref && payload.kind)
-      ? 'delivery ' + (payload.delivery_id || '(no id)') + ' to ' + payload.external_ref
-      : 'update ' + (payload.update_id || '(no id)');
-    notifyAdmin('headhunter gateway error on ' + context + ':\n' + (err && err.stack ? err.stack : err));
-    // Always 200 to Telegram, otherwise it retries the same update forever.
-  }
-
-  return ok;
-}
-
-// Telegram retries a webhook update if it does not get a prompt 200 back.
-// handleTelegramUpdate does several sequential network calls (sendMessage,
-// getFile, the file download, the /intake POST) before doPost can respond, so
-// a slow run causes Telegram to redeliver the same update while the first run
-// is still going, and the candidate sees the same reply more than once.
-function isDuplicateUpdate(updateId) {
-  if (!updateId) return false;
+/** A replay-guard against redelivery, keyed by whatever the caller considers unique. */
+function isDuplicate(key) {
   var cache = CacheService.getScriptCache();
-  var key = 'update:' + updateId;
   if (cache.get(key)) return true;
   cache.put(key, '1', 21600);
   return false;
 }
 
+function jsonOutput(text) {
+  return ContentService.createTextOutput(text).setMimeType(ContentService.MimeType.JSON);
+}
+
 // --------------------------------------------------------------------------
-// Candidate -> us
+// Entry point
 // --------------------------------------------------------------------------
 
-function handleTelegramUpdate(update) {
-  var message = update.message || update.edited_message;
-  if (!message) return;
-
-  var chatId = message.chat.id;
-  var text = message.text || '';
-
-  if (text.indexOf('/start') === 0) {
-    telegram('sendMessage', {
-      chat_id: chatId,
-      text: 'سلام! رزومه‌تان را به صورت فایل PDF همین‌جا بفرستید تا بررسی و ویرایش شود.\n\n' +
-            'Send your resume here as a PDF file and we will polish it for you.'
-    });
-    return;
+function doPost(e) {
+  var payload;
+  try {
+    payload = JSON.parse(e.postData.contents);
+  } catch (err) {
+    return jsonOutput(JSON.stringify({ ok: true }));
   }
 
-  if (text.indexOf('/whoami') === 0) {
-    telegram('sendMessage', {
-      chat_id: chatId,
-      message_thread_id: message.message_thread_id,
-      text: whoamiText(message)
-    });
-    return;
+  var secret = (e.parameter && e.parameter.secret) || null;
+  return secret ? handleRelay(secret, payload) : handleInboundUpdate(payload);
+}
+
+// --------------------------------------------------------------------------
+// Telegram -> app: forward the raw update, unopened.
+// --------------------------------------------------------------------------
+
+function handleInboundUpdate(update) {
+  // Telegram redelivers an update if it does not get a prompt 200 back, and
+  // the app takes long enough (file download, DB writes) that this happens
+  // routinely. This is a mechanical replay-guard against that, not a
+  // decision about the update's content.
+  if (update.update_id && isDuplicate('update:' + update.update_id)) {
+    return jsonOutput(JSON.stringify({ ok: true, duplicate: true }));
   }
 
-  var file = message.document || largestPhoto(message);
-  if (!file) {
-    telegram('sendMessage', {
-      chat_id: chatId,
-      text: 'لطفاً رزومه را به صورت فایل PDF ارسال کنید.\nPlease send your resume as a PDF file.'
-    });
-    return;
-  }
-
-  var blob = downloadTelegramFile(file.file_id, file.file_name || 'resume.pdf');
-
-  var response = UrlFetchApp.fetch(API_BASE + '/intake', {
+  var response = UrlFetchApp.fetch(API_BASE + '/telegram/webhook', {
     method: 'post',
+    contentType: 'application/json',
     headers: apiHeaders(),
-    payload: {
-      external_ref: 'telegram:' + chatId,
-      display_name: displayName(message.from),
-      file: blob
-    },
+    payload: JSON.stringify(update),
     muteHttpExceptions: true
   });
 
+  // Let a failed forward throw, which makes this whole doPost fail loudly
+  // instead of returning 200 — that is what makes Telegram retry the update
+  // once the app is back, instead of the update being silently dropped.
   if (response.getResponseCode() >= 300) {
-    console.error('intake failed: ' + response.getResponseCode() + ' ' + response.getContentText());
-    telegram('sendMessage', {
-      chat_id: chatId,
-      text: 'دریافت فایل با خطا مواجه شد. لطفاً دوباره تلاش کنید.\nUpload failed, please try again.'
-    });
-    return;
+    throw new Error('Forward to app failed: ' + response.getResponseCode() + ' ' + response.getContentText());
   }
 
-  telegram('sendMessage', {
-    chat_id: chatId,
-    text: 'رزومه شما دریافت شد. پس از بررسی، نسخه ویرایش‌شده برایتان ارسال می‌شود.\n\n' +
-          'Got your resume. We will send the polished version back here once it is ready.'
-  });
-}
-
-function largestPhoto(message) {
-  if (!message.photo || !message.photo.length) return null;
-  var photo = message.photo[message.photo.length - 1];
-  return { file_id: photo.file_id, file_name: 'resume.jpg' };
-}
-
-function displayName(from) {
-  if (!from) return '';
-  return [from.first_name, from.last_name].filter(Boolean).join(' ') ||
-         (from.username ? '@' + from.username : '');
-}
-
-// Dumps the identifiers of whoever/wherever sent /whoami: chat id (needed for
-// ADMIN_ID or external_ref lookups), the forum topic id if this is a topic in
-// a supergroup, and the sender's own id/username.
-function whoamiText(message) {
-  var chat = message.chat;
-  var from = message.from || {};
-  var lines = [
-    'chat_id: ' + chat.id,
-    'chat_type: ' + chat.type
-  ];
-  if (chat.title) lines.push('chat_title: ' + chat.title);
-  if (message.message_thread_id) lines.push('topic_id: ' + message.message_thread_id);
-  lines.push('user_id: ' + (from.id !== undefined ? from.id : ''));
-  if (from.username) lines.push('username: @' + from.username);
-  var name = displayName(from);
-  if (name) lines.push('name: ' + name);
-  if (from.language_code) lines.push('language_code: ' + from.language_code);
-  return lines.join('\n');
-}
-
-function downloadTelegramFile(fileId, fileName) {
-  var info = telegram('getFile', { file_id: fileId });
-  var url = 'https://api.telegram.org/file/bot' + prop('BOT_TOKEN') + '/' + info.file_path;
-  var blob = UrlFetchApp.fetch(url, { muteHttpExceptions: true }).getBlob();
-  return blob.setName(fileName);
+  return jsonOutput(response.getContentText());
 }
 
 // --------------------------------------------------------------------------
-// Us -> candidate
+// App -> Telegram: make the call the app asked for, nothing more.
+//
+// Body shape: { method, params, attachment_url?, attachment_param?, idempotency_key? }
 // --------------------------------------------------------------------------
 
-function handleDelivery(payload, secretFromQuery) {
-  // The API sends the secret as a header, which Apps Script does not expose to
-  // scripts, so it is also accepted as a ?secret= query parameter. Set the
-  // gateway_url in Settings to <web app url>?secret=<GATEWAY_SECRET>.
-  var expected = prop('GATEWAY_SECRET');
-  if (secretFromQuery !== expected) {
-    throw new Error('Rejected delivery: bad or missing gateway secret.');
+function handleRelay(secret, envelope) {
+  if (secret !== prop('GATEWAY_SECRET')) {
+    throw new Error('Rejected relay: bad gateway secret.');
   }
 
-  // The worker gives up on a slow push and retries it. Without this check a
-  // candidate would receive the same document twice whenever sending succeeded
-  // but the response did not get back in time.
   var cache = CacheService.getScriptCache();
-  var seenKey = payload.idempotency_key ? 'sent:' + payload.idempotency_key : null;
-  if (seenKey && cache.get(seenKey)) {
-    console.log('skipping duplicate delivery ' + payload.delivery_id);
-    return;
+  var cacheKey = envelope.idempotency_key ? 'relay:' + envelope.idempotency_key : null;
+  if (cacheKey) {
+    var cached = cache.get(cacheKey);
+    if (cached) return jsonOutput(cached);
   }
 
-  var chatId = String(payload.external_ref).replace(/^telegram:/, '');
-
-  if (payload.kind === 'document' && payload.file_url) {
-    var response = UrlFetchApp.fetch(payload.file_url, {
-      headers: apiHeaders(),
-      muteHttpExceptions: true
-    });
-    if (response.getResponseCode() >= 300) {
-      throw new Error('Could not fetch attachment: ' + response.getResponseCode());
-    }
-
-    var blob = response.getBlob().setName(payload.file_name || 'resume.pdf');
-    var form = {
-      chat_id: chatId,
-      document: blob
-    };
-    if (payload.text) form.caption = payload.text.substring(0, 1024);
-
-    var sent = UrlFetchApp.fetch(
-      'https://api.telegram.org/bot' + prop('BOT_TOKEN') + '/sendDocument',
-      { method: 'post', payload: form, muteHttpExceptions: true }
-    );
-    if (sent.getResponseCode() >= 300) {
-      throw new Error('sendDocument failed: ' + sent.getContentText());
-    }
-    if (seenKey) cache.put(seenKey, '1', 21600);
-    return;
+  // The app never gets the bot token, so fetching a Telegram file's bytes has
+  // to happen here; the result is streamed straight back as the response body.
+  if (envelope.method === 'downloadFile') {
+    var info = telegram('getFile', { file_id: envelope.params.file_id });
+    var url = 'https://api.telegram.org/file/bot' + prop('BOT_TOKEN') + '/' + info.file_path;
+    var blob = UrlFetchApp.fetch(url, { muteHttpExceptions: true }).getBlob();
+    if (envelope.params.file_name) blob = blob.setName(envelope.params.file_name);
+    return blob;
   }
 
-  telegram('sendMessage', { chat_id: chatId, text: payload.text || '' });
-  if (seenKey) cache.put(seenKey, '1', 21600);
+  var params = envelope.params || {};
+  if (envelope.attachment_url && envelope.attachment_param) {
+    var fetched = UrlFetchApp.fetch(envelope.attachment_url, { headers: apiHeaders(), muteHttpExceptions: true });
+    if (fetched.getResponseCode() >= 300) {
+      throw new Error('Could not fetch attachment: ' + fetched.getResponseCode());
+    }
+    params[envelope.attachment_param] = fetched.getBlob();
+  }
+
+  var result = telegram(envelope.method, params);
+  var body = JSON.stringify({ ok: true, result: result });
+  if (cacheKey) cache.put(cacheKey, body, 21600);
+  return jsonOutput(body);
 }
 
 // --------------------------------------------------------------------------
