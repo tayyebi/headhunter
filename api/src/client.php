@@ -10,18 +10,21 @@ function http_send(
     int $timeout = 180
 ): array {
     $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_CUSTOMREQUEST  => $method,
+    $options = [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT        => $timeout,
         CURLOPT_CONNECTTIMEOUT => 15,
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_MAXREDIRS      => 3,
         CURLOPT_HTTPHEADER     => $headers,
-    ]);
-    if ($body !== null) {
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+    ];
+    if (strtoupper($method) === 'POST') {
+        $options[CURLOPT_POST] = true;
+    } else {
+        $options[CURLOPT_CUSTOMREQUEST] = $method;
     }
+    curl_setopt_array($ch, $options);
+    if ($body !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
 
     $raw    = curl_exec($ch);
     $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);

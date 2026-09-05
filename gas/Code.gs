@@ -86,6 +86,10 @@ function doPost(e) {
 // --------------------------------------------------------------------------
 
 function handleInboundUpdate(update) {
+  // React before forwarding so the sender gets immediate receipt feedback even
+  // when API processing involves a file download or other slow work.
+  reactToUpdate(update);
+
   // Telegram redelivers an update if it does not get a prompt 200 back, and
   // the app takes long enough (file download, DB writes) that this happens
   // routinely. This is a mechanical replay-guard against that, not a
@@ -110,6 +114,21 @@ function handleInboundUpdate(update) {
   }
 
   return jsonOutput(response.getContentText());
+}
+
+function reactToUpdate(update) {
+  var message = update.message || update.edited_message;
+  if (!message || !message.chat || !message.message_id) return;
+  try {
+    telegram('setMessageReaction', {
+      chat_id: String(message.chat.id),
+      message_id: message.message_id,
+      reaction: [{ type: 'emoji', emoji: '👍' }]
+    });
+  } catch (err) {
+    // Receipt acknowledgement is best effort; forwarding must still happen.
+    console.log('Reaction failed: ' + err.message);
+  }
 }
 
 // --------------------------------------------------------------------------

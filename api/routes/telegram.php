@@ -49,9 +49,6 @@ function telegram_handle_update(array $settings, array $update): void
     $chatId = (string) $message['chat']['id'];
     $text   = (string) ($message['text'] ?? '');
 
-    // Acknowledge every message the gateway forwards, regardless of what it is.
-    telegram_react($settings, $chatId, (int) $message['message_id']);
-
     if (str_starts_with($text, '/start')) {
         telegram_send_message($settings, $chatId,
             "سلام! رزومه‌تان را به صورت فایل PDF همین‌جا بفرستید تا بررسی و ویرایش شود.\n\n" .

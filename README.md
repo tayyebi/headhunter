@@ -98,8 +98,7 @@ Nothing works until the AI is configured. Go to **Settings**:
 | Model | Defaults to `anthropic/claude-sonnet-5`. Must accept PDF file parts, or extraction falls back to `pdftotext`. |
 | API key | Required. Write-only — afterwards you only see the last four characters. |
 | Temperature | Defaults to `0.2`. |
-| Gateway URL | The Apps Script web app URL **with `?secret=…` appended** (step 5). |
-| Gateway secret | Any long random string. Write-only. |
+| Gateway URL | The complete Apps Script web app URL logged by `setWebhook()`, including `?secret=...`. |
 | Telegram admin chat id | Optional. Gets a PV message whenever the Telegram webhook handler throws. Send `/whoami` to the bot to read one off. |
 
 ## 5. Connect the Telegram bot
@@ -119,12 +118,40 @@ Telegram API call the API asks it to make. All of that logic (`/start`,
    - `BOT_TOKEN` — from BotFather
    - `API_TOKEN` — the gateway token from step 2
    - `GATEWAY_SECRET` — the same string you put in Settings
-5. Run `setWebhook()` once from the editor. It logs the exact Gateway URL to
-   paste into Settings.
+5. Run `setWebhook()` once from the editor. It logs the complete Gateway URL
+   to paste into Settings.
 6. Run `testApiAuth()` to confirm the token works. It should print `200`.
 
 Apps Script cannot read request headers, which is why the secret travels as a
 query parameter on the Gateway URL.
+
+## Terminal operations
+
+Every JSON API endpoint can be called without a browser through the API
+container. Public diagnostics and queue summaries have short commands:
+
+```sh
+./scripts/cli db-status
+./scripts/cli settings
+./scripts/cli queue runs
+./scripts/cli queue deliveries
+./scripts/cli telegram-check
+./scripts/cli telegram-check CHAT_ID
+```
+
+Use `api` for every operation exposed in the admin pages. Authenticate once,
+then pass the returned token through `HEADHUNTER_TOKEN`:
+
+```sh
+./scripts/cli api POST /auth/login '{"username":"owner","password":"..."}'
+HEADHUNTER_TOKEN='...' ./scripts/cli api GET /candidates
+HEADHUNTER_TOKEN='...' ./scripts/cli api PUT /settings '{"temperature":0.2}'
+HEADHUNTER_TOKEN='...' ./scripts/cli upload CANDIDATE_ID /path/to/resume.pdf
+```
+
+`telegram-check CHAT_ID` sends a real message through Apps Script and Telegram.
+Deploy the latest `gas/Code.gs` before using it: the script now adds the 👍
+immediately, while the later bot response confirms API processing.
 
 ## 6. Optional: install fonts
 

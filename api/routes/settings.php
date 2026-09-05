@@ -24,7 +24,6 @@ function r_settings_get(array $p): array
         'ai_api_key_hint'    => $key === '' ? '' : ('…' . substr($key, -4)),
         'temperature'        => (float) $s['temperature'],
         'gateway_url'        => $s['gateway_url'],
-        'gateway_secret_set' => $s['gateway_secret'] !== '',
         'telegram_admin_chat_id' => $s['telegram_admin_chat_id'],
         'updated_at'         => $s['updated_at'],
     ]];
@@ -50,7 +49,7 @@ function r_settings_put(array $p): array
     }
 
     // Secrets: an empty string means "leave the stored value alone".
-    foreach (['ai_api_key', 'gateway_secret'] as $secret) {
+    foreach (['ai_api_key'] as $secret) {
         if (!empty($b[$secret])) {
             $sets[] = "{$secret} = :{$secret}";
             $params[":{$secret}"] = (string) $b[$secret];

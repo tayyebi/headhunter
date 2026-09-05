@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+exec docker compose exec -T \
+  -e HEADHUNTER_TOKEN="${HEADHUNTER_TOKEN:-}" \
+  api php /var/www/html/api/bin/cli.php "$@"

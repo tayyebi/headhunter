@@ -5,8 +5,8 @@ declare(strict_types=1);
  * All non-secret configuration. There is no .env file anywhere in this project:
  * change a value here and restart the containers.
  *
- * Real secrets (AI API key, gateway secret) live in the `settings` table and are
- * edited from the admin app. User passwords and tokens are hashed in the database.
+ * The AI API key lives in the `settings` table and is edited from the admin app.
+ * User passwords and tokens are hashed in the database.
  */
 
 /**

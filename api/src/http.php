@@ -42,6 +42,9 @@ function body(): array
     if ($cache !== null) {
         return $cache;
     }
+    if (array_key_exists('__cli_body', $GLOBALS)) {
+        return $cache = is_array($GLOBALS['__cli_body']) ? $GLOBALS['__cli_body'] : [];
+    }
 
     $type = $_SERVER['CONTENT_TYPE'] ?? '';
     if (str_contains($type, 'multipart/form-data') || str_contains($type, 'x-www-form-urlencoded')) {

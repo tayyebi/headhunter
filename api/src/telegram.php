@@ -25,8 +25,6 @@ function telegram_call(
     if ($url === '') {
         throw new RuntimeException('No gateway_url is configured. Set one in Settings.');
     }
-    $url .= (str_contains($url, '?') ? '&' : '?') . 'secret=' . rawurlencode((string) $settings['gateway_secret']);
-
     $envelope = ['method' => $method, 'params' => $params];
     if ($attachmentUrl !== null) {
         $envelope['attachment_url']   = $attachmentUrl;
@@ -60,8 +58,6 @@ function telegram_download(array $settings, string $fileId, string $fileName = '
     if ($url === '') {
         throw new RuntimeException('No gateway_url is configured. Set one in Settings.');
     }
-    $url .= (str_contains($url, '?') ? '&' : '?') . 'secret=' . rawurlencode((string) $settings['gateway_secret']);
-
     $params = ['file_id' => $fileId];
     if ($fileName !== '') {
         $params['file_name'] = $fileName;
@@ -97,24 +93,6 @@ function telegram_send_document(
         $params['caption'] = substr($caption, 0, 1024);
     }
     telegram_call($settings, 'sendDocument', $params, $attachmentUrl, 'document', $idempotencyKey);
-}
-
-/**
- * Acknowledges receipt of an incoming message with a 👍 reaction. Best-effort:
- * a reaction failing (message too old, chat does not allow reactions, gateway
- * hiccup) must never block actually handling the message.
- */
-function telegram_react(array $settings, string $chatId, int $messageId, string $emoji = '👍'): void
-{
-    try {
-        telegram_call($settings, 'setMessageReaction', [
-            'chat_id'    => $chatId,
-            'message_id' => $messageId,
-            'reaction'   => [['type' => 'emoji', 'emoji' => $emoji]],
-        ]);
-    } catch (Throwable $e) {
-        error_log('[telegram] failed to react: ' . $e->getMessage());
-    }
 }
 
 /** Best-effort PV alert. Swallows its own errors so a broken chat id or a
