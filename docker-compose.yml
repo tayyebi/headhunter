@@ -26,10 +26,7 @@ services:
     command: ["postgres", "-c", "hba_file=/etc/postgresql/pg_hba.conf"]
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
-      - ./db:/docker-entrypoint-initdb.d:ro
       - ./db/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
-      # First boot writes the generated owner password and gateway token here.
-      - ./data/secrets:/bootstrap
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d headhunter"]
       interval: 5s
@@ -55,11 +52,15 @@ services:
       - >-
         mkdir -p /var/www/html/storage/originals /var/www/html/storage/outputs &&
         chown -R www-data:www-data /var/www/html/storage &&
+        php /var/www/html/api/bin/migrate.php &&
         exec apache2-foreground
     volumes:
       - ./api:/var/www/html/api
+      - ./db:/var/www/html/db:ro
       - ./templates:/var/www/html/templates
       - ./data/storage:/var/www/html/storage
+      # Bootstrap migration writes the generated owner password and gateway token here.
+      - ./data/secrets:/var/www/html/secrets
       - ./docker/php/vhost.conf:/etc/apache2/sites-enabled/000-default.conf:ro
       - ./docker/php/app.ini:/usr/local/etc/php/conf.d/app.ini:ro
     ports:
@@ -83,12 +84,17 @@ services:
       - -c
       - >-
         chown -R www-data:www-data /var/www/html/storage &&
+        php /var/www/html/api/bin/migrate.php &&
         exec su www-data -s /bin/sh -c 'php /var/www/html/worker/worker.php'
     volumes:
       - ./api:/var/www/html/api
       - ./worker:/var/www/html/worker
+      - ./db:/var/www/html/db:ro
       - ./templates:/var/www/html/templates
       - ./data/storage:/var/www/html/storage
+      # Whichever of api/worker wins the migration lock on a fresh boot
+      # writes the generated owner password and gateway token here.
+      - ./data/secrets:/var/www/html/secrets
       - ./docker/php/app.ini:/usr/local/etc/php/conf.d/app.ini:ro
 
   pwa:

@@ -212,29 +212,41 @@ leave you with no active owner.
 
 ---
 
-# Seeding and reset
+# Migrations
 
-## What first boot does
-
-Scripts in `db/` run once, in order, the first time the data directory is empty:
+There is no first-boot-only script anywhere in this project. `api/bin/migrate.php`
+runs before the `api` and `worker` containers start serving, **every time they
+boot**. Each `db/migrations/NNNN_name.up.sql` not yet recorded in the
+`schema_migrations` table is applied, in order; already-applied ones are
+skipped. Shipping a schema change is: add a new numbered pair of files,
+redeploy. Nothing to run by hand, no separate migration step to remember.
 
 | File | Does |
 |---|---|
-| `001_schema.sql` | Creates every table and seeds the single `settings` row, including the default AI instruction |
-| `002_bootstrap.sh` | Creates the `api` role, the `owner` and `gateway` accounts, and the gateway's token |
+| `0001_initial_schema.up.sql` | Every table, and the seeded `settings` row (default AI instruction) |
+| `0002_bootstrap.up.php` | Creates the `api` database role and the `owner`/`gateway` accounts, and prints their credentials once |
+| `0003_telegram_relay.up.sql`, and any added since | Ordinary schema changes |
+
+Most migrations are plain SQL. `0002_bootstrap` is PHP because it has to
+generate and print secrets, not just alter the schema — the runner treats a
+`.up.php` file the same as `.up.sql`: run once, in order, tracked by name. It
+runs as the `postgres` role (trusted the same way as everything else on the
+internal network, see `pg_hba.conf`), since the `api` role deliberately has
+no DDL rights. An advisory lock keeps the `api` and `worker` containers,
+which can boot at the same moment, from racing to apply the same migration
+twice.
 
 Generated secrets never touch the repository: only a bcrypt hash and a SHA-256
-hash reach the database, and the plaintext exists only in that one log line.
+hash reach the database, and the plaintext exists only in that one log line
+(and, best-effort, in `data/secrets/initial-credentials.txt`).
 
-## Re-running the seed
-
-These scripts only run when `data/postgres` is empty. Editing them has no effect
-on a database that already exists — use the admin app for account changes, or
-apply SQL by hand:
+Each `NNNN_name.up.*` has a matching `NNNN_name.down.sql` for manual rollback:
 
 ```sh
-docker compose exec db psql -U postgres -d headhunter
+docker compose exec api php /var/www/html/api/bin/migrate.php down
 ```
+
+Nothing calls `down` automatically — only `up`, on boot.
 
 ## Starting over
 
@@ -268,12 +280,13 @@ retention is your call.
 
 ```
 api/                public/index.php is the router and the capability table
-  src/              config, db, auth, files, ai, pdf, gateway, http client
+  src/              config, db, auth, files, ai, pdf, gateway, http client, migrate
   routes/           one file per resource
+  bin/migrate.php   applies pending db/migrations/*.up.* on every api/worker boot
 worker/worker.php   two queues: AI extraction, and delivery pushes
 templates/          resume PDF template (Persian RTL and English LTR)
 pwa/                the admin app
 gas/Code.gs         dumb relay to Telegram (holds the bot token)
-db/                 schema and first-boot bootstrap
+db/migrations/      numbered up/down migrations, applied automatically on every boot
 data/               all runtime state (gitignored)
 ```

@@ -134,16 +134,7 @@ CREATE TABLE settings (
     temperature         numeric     NOT NULL DEFAULT 0.2,
     gateway_url         text        NOT NULL DEFAULT '',
     gateway_secret      text        NOT NULL DEFAULT '',
-    -- Chat id that gets a PV message whenever the Telegram webhook handler throws.
-    telegram_admin_chat_id text     NOT NULL DEFAULT '',
     updated_at          timestamptz NOT NULL DEFAULT now()
-);
-
--- Replay-guard against Telegram redelivering a webhook update: the gateway
--- forwards every update it receives, so this is what makes redelivery a no-op.
-CREATE TABLE telegram_updates (
-    update_id   bigint      PRIMARY KEY,
-    received_at timestamptz NOT NULL DEFAULT now()
 );
 
 INSERT INTO settings (id, system_instruction) VALUES (1,

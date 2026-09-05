@@ -26,6 +26,13 @@ const DB_PORT = '5432';
 const DB_NAME = 'headhunter';
 const DB_USER = 'api';
 
+/**
+ * The `api` role has no DDL rights, by design, so migrations run as `postgres`
+ * instead — trusted the same way over the internal network (see pg_hba.conf).
+ * Used only by bin/migrate.php, never by the request/worker path.
+ */
+const DB_MIGRATE_USER = 'postgres';
+
 const GOTENBERG_URL = 'http://gotenberg:3000';
 
 const STORAGE_DIR   = '/var/www/html/storage';
